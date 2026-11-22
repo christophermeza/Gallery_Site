@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diary | Gallery</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="navbar-placeholder"></div>
+
+  <main>
+    <div class="section-header">
+      <h2 class="page-title">Memory Diary</h2>
+      <button id="add-journal-entry-btn" class="btn hidden" type="button">+ Add Entry</button>
+    </div>
+
+    <form id="journal-editor-panel" class="hero-banner editor-panel hidden">
+      <h3 id="journal-editor-heading">New Diary Entry</h3>
+      <input type="hidden" id="journal-doc-id">
+
+      <div class="editor-grid-2">
+        <div>
+          <label class="editor-label" for="journal-title-input">Creative Display Title</label>
+          <input id="journal-title-input" class="editor-input" type="text" required placeholder="Enter display title">
+        </div>
+        <div>
+          <label class="editor-label" for="journal-date-input">Date</label>
+          <input id="journal-date-input" class="editor-input" type="date" required>
+        </div>
+      </div>
+
+      <label class="editor-label" for="journal-path-input">Media URL / Path or Remote Upload</label>
+      <div class="input-with-action">
+        <input id="journal-path-input" class="editor-input" type="text" placeholder="https://... or media/folder/filename.jpg">
+        <button id="journal-upload-remote-btn" class="btn btn-secondary" type="button">Upload File</button>
+      </div>
+      <input id="journal-remote-picker" type="file" accept="image/*,video/*" hidden>
+
+      <div class="editor-grid-2">
+        <div>
+          <label class="editor-label" for="journal-alt-input">Alt Text / Fallback Caption</label>
+          <input id="journal-alt-input" class="editor-input" type="text" required placeholder="Describe what appears in the media">
+        </div>
+        <div>
+          <label class="editor-label" for="journal-location-input">Location</label>
+          <input id="journal-location-input" class="editor-input" type="text" placeholder="City, State or Country">
+        </div>
+      </div>
+
+      <div class="editor-grid-2">
+        <div>
+          <label class="editor-label" for="journal-people-input">People (comma-separated)</label>
+          <input id="journal-people-input" class="editor-input" type="text" placeholder="Name 1, Name 2">
+        </div>
+        <div>
+          <label class="editor-label" for="journal-tags-input">Tags (comma-separated)</label>
+          <input id="journal-tags-input" class="editor-input" type="text" placeholder="tag1, tag2, tag3">
+        </div>
+      </div>
+
+      <div class="editor-grid-2">
+        <div>
+          <label class="editor-label" for="journal-camera-input">Camera / Device</label>
+          <input id="journal-camera-input" class="editor-input" type="text" placeholder="Camera or device used">
+        </div>
+        <div>
+          <label class="editor-label" for="journal-resolution-input">Resolution / Dimensions</label>
+          <input id="journal-resolution-input" class="editor-input" type="text" placeholder="Width x Height px">
+        </div>
+      </div>
+
+      <label class="editor-label" for="journal-desc-input">Story / Journal Description</label>
+      <textarea id="journal-desc-input" class="editor-textarea" rows="4" placeholder="Write notes, context, or journal thoughts..."></textarea>
+
+      <div class="hero-actions" style="margin-top: 14px;">
+        <button class="btn" type="submit">Save Entry</button>
+        <button id="cancel-journal-edit-btn" class="btn btn-secondary" type="button">Cancel</button>
+      </div>
+      <p id="journal-save-status" class="editor-status"></p>
+    </form>
+
+    <div id="journal-feed" class="journal-list">
+      <p class="journal-status">Once posted, journal entries will populate this page.</p>
+    </div>
+  </main>
+
+  <div id="entry-detail-modal" class="entry-detail-modal hidden" role="dialog" aria-modal="true">
+    <div id="entry-detail-content" class="entry-detail-card"></div>
+  </div>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>

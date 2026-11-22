@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Media | Gallery</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="navbar-placeholder"></div>
+
+  <main>
+    <div class="section-header">
+      <h2 class="page-title">All Media</h2>
+
+      <div class="filter-group">
+        <button class="filter-btn active-filter" data-filter="all" type="button">All</button>
+        <button class="filter-btn btn-secondary" data-filter="image" type="button">Images</button>
+        <button class="filter-btn btn-secondary" data-filter="video" type="button">Videos</button>
+      </div>
+    </div>
+
+    <div id="media-gallery" class="media-grid"></div>
+  </main>
+
+  <div id="lightbox" class="hidden" role="dialog" aria-modal="true">
+    <button id="lightbox-close" type="button" aria-label="Close">✕</button>
+    <button id="lightbox-prev" type="button" aria-label="Previous">‹</button>
+    <div id="lightbox-content"></div>
+    <p id="lightbox-caption"></p>
+    <button id="lightbox-next" type="button" aria-label="Next">›</button>
+  </div>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>

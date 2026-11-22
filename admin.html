@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Administrator Sign In | Gallery</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+
+  <div id="navbar-placeholder"></div>
+
+  <main class="admin-container">
+    <!-- Sign-In Window -->
+    <section id="auth-section" class="admin-card">
+      <h1>Administrator Sign In</h1>
+      <p class="admin-subtext">
+        Sign in to unlock inline editing across Home, Media, Collections, Diary, and About.
+      </p>
+
+      <form id="login-form" class="admin-form">
+        <div class="form-group">
+          <label for="admin-email">Email</label>
+          <input type="email" id="admin-email" required placeholder="Enter admin email" autocomplete="username" />
+        </div>
+
+        <div class="form-group">
+          <label for="admin-password">Password</label>
+          <input type="password" id="admin-password" required placeholder="Enter password" autocomplete="current-password" />
+        </div>
+
+        <button type="submit" class="btn">Sign In</button>
+        <p id="auth-status" class="status-msg" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <!-- Active Session View -->
+    <section id="workspace-section" class="admin-card" hidden>
+      <div class="session-header-row">
+        <h2>You are now logged in.</h2>
+        <button id="sign-out-btn" type="button" class="btn btn-danger-inline">Log Out</button>
+      </div>
+      <p class="session-note">
+        Closing the browser window will log you out of your account. You can now visit any page to add, edit, or delete content directly.
+      </p>
+    </section>
+  </main>
+
+  <script type="module" src="script.js"></script>
+  <script type="module" src="admin.js"></script>
+</body>
+</html>
