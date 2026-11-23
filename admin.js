@@ -1,29 +1,9 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {
-  getAuth,
-  setPersistence,
-  browserSessionPersistence,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyAdJOUeCtXQC5k5qabCQZoQ8hoXvLNWJq0",
-  authDomain: "gallery-site-d188d.firebaseapp.com",
-  projectId: "gallery-site-d188d",
-  storageBucket: "gallery-site-d188d.firebasestorage.app",
-  messagingSenderId: "154184726328",
-  appId: "1:154184726328:web:97d7062afb03ef792eb3cd",
-  measurementId: "G-4EXWDTN96L"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
-setPersistence(auth, browserSessionPersistence).catch((err) => {
-  console.warn("Auth persistence fallback:", err.message);
-});
+import { auth, authReady } from "./firebase-config.js";
 
 const authSection = document.getElementById("auth-section");
 const workspaceSection = document.getElementById("workspace-section");
@@ -51,7 +31,7 @@ if (loginForm) {
     if (!emailEl || !passwordEl) return;
 
     try {
-      await setPersistence(auth, browserSessionPersistence);
+      await authReady;
       await signInWithEmailAndPassword(auth, emailEl.value.trim(), passwordEl.value);
       if (authStatus) authStatus.textContent = "";
       loginForm.reset();

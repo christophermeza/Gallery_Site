@@ -13,9 +13,6 @@
   <main>
     <div class="section-header">
       <h2 class="page-title">About This Gallery</h2>
-      <div id="about-admin-controls" class="admin-inline-actions hidden">
-        <button id="toggle-about-edit-btn" class="btn hidden" type="button">Edit Page</button>
-      </div>
     </div>
 
     <div id="about-banner-card" class="hero-banner">
@@ -32,9 +29,14 @@
         Browse full media sets, explore themed collections, or read the stories behind individual moments.
       </p>
 
-      <form id="about-editor-panel" class="editor-panel inline-editor-panel hidden">
+      <div id="about-admin-controls" class="editor-panel inline-editor-panel hidden">
         <hr class="inline-editor-divider">
         <h3>Editing About Page</h3>
+
+        <label class="editor-label" for="about-existing-media-select">Choose Existing Cloudinary Image</label>
+        <select id="about-existing-media-select" class="editor-input">
+          <option value="">-- Select from existing media --</option>
+        </select>
 
         <label class="editor-label" for="about-photo-input">Banner Photo (URL, Path, or Upload — leave blank for no banner)</label>
         <div class="input-with-action">
@@ -51,11 +53,10 @@
         <textarea id="about-p2-input" class="editor-textarea" rows="2"></textarea>
 
         <div class="hero-actions" style="margin-top: 14px;">
-          <button class="btn" type="submit">Save Changes</button>
-          <button id="cancel-about-edit-btn" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="about-save-btn" class="btn" type="button">Save Changes</button>
         </div>
         <p id="about-save-status" class="editor-status"></p>
-      </form>
+      </div>
 
       <div id="archive-stats" class="stats-row"></div>
     </div>
