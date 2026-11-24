@@ -1,0 +1,14 @@
+{
+  "projectName": "GallerySite_WebApp (Gallery_Site)",
+  "originalName": "Gallery_Site",
+  "language": "HTML / JavaScript / CSS",
+  "category": "media-tools",
+  "purpose": "Personal photo gallery, journal, and media collections web application with Firebase & Cloudinary integration (Current Production Phase).",
+  "status": "Active Current Phase",
+  "keyFeatures": [
+    "Cloudinary Image Management",
+    "Firebase Config & Auth Integration",
+    "Admin Dashboard (admin.html, admin.js)",
+    "Media & Journal Collections Page"
+  ]
+}

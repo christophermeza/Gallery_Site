@@ -16,7 +16,6 @@ import { app, db, auth } from "./firebase-config.js";
 import {
   sanitizeCollectionName,
   buildCloudinaryFolder,
-  isImageMedia,
   isVideoMedia,
   getVideoPosterUrl,
   uploadFileToCloudinary
@@ -25,6 +24,13 @@ import {
 // ==========================================
 // 0. SHARED NAVBAR LOADER (nav.html)
 // ==========================================
+function syncNavbarAdminVisibility() {
+  const navLibItem = document.getElementById("nav-media-library-item");
+  if (navLibItem) {
+    navLibItem.classList.toggle("hidden", !isAdminSignedIn);
+  }
+}
+
 async function loadSharedNavbar() {
   const placeholder = document.getElementById("navbar-placeholder");
   if (!placeholder) return;
@@ -49,16 +55,18 @@ async function loadSharedNavbar() {
       const linkPage = link.getAttribute("href");
       link.classList.toggle("active", linkPage === currentPage);
     });
+
+    syncNavbarAdminVisibility();
   } catch (err) {
     console.warn("Navbar fetch skipped/failed:", err.message);
   }
 }
 
-loadSharedNavbar();
-
 // ==========================================
 // 1. MEDIA & METADATA HELPERS (CLOUDINARY + FIRESTORE)
 // ==========================================
+const VALID_OBJECT_POSITIONS = ["center", "top", "bottom", "left", "right"];
+
 let dynamicMediaItems = [];
 let liveEntries = [];
 let mediaById = new Map();
@@ -68,11 +76,16 @@ let isAdminSignedIn = false;
 let deleteJournalEntryById = async () => {};
 let deleteMediaItemById = async () => {};
 
+let attachedMediaId = null;
+let selectedJournalMediaUrl = "";
+
 let trackEvent = () => {};
 try {
   const analytics = getAnalytics(app);
   trackEvent = (name, params) => logEvent(analytics, name, params);
 } catch (e) {}
+
+loadSharedNavbar();
 
 function escapeHtml(text) {
   return String(text || "")
@@ -80,6 +93,16 @@ function escapeHtml(text) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function normalizeObjectPosition(pos) {
+  const clean = String(pos || "center").trim().toLowerCase();
+  return VALID_OBJECT_POSITIONS.includes(clean) ? clean : "center";
+}
+
+function getItemPosition(item) {
+  if (!item) return "center";
+  return normalizeObjectPosition(item.objectPosition || item.cardPosition || item.position);
 }
 
 function getItemUrl(item) {
@@ -135,6 +158,11 @@ function getItemTimestamp(item) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function isSamplePlaceholderItem(item) {
+  const label = `${getItemTitle(item)} ${getItemAlt(item)}`.toLowerCase();
+  return label.includes("sample animal photo");
+}
+
 function resolveMediaReference(refIdOrSlot, fallbackUrl = "") {
   if (refIdOrSlot) {
     if (mediaById.has(refIdOrSlot)) return mediaById.get(refIdOrSlot);
@@ -152,18 +180,37 @@ function resolveMediaReference(refIdOrSlot, fallbackUrl = "") {
   return null;
 }
 
-function getAllValidMediaItems() {
-  return dynamicMediaItems.filter((item) => /^https?:\/\//i.test(getItemUrl(item)));
+// All valid items (including hidden/seasonal) for Media Library & pickers
+function getAllValidMediaItems(includeHidden = false) {
+  return dynamicMediaItems.filter((item) => {
+    if (!/^https?:\/\//i.test(getItemUrl(item))) return false;
+    if (isSamplePlaceholderItem(item)) return false;
+    if (!includeHidden && item.hidden === true) return false;
+    return true;
+  });
 }
 
-function getCollectionsMap() {
+function getCollectionsMap(includeHidden = false) {
   const grouped = {};
-  getAllValidMediaItems().forEach((item) => {
+  getAllValidMediaItems(includeHidden).forEach((item) => {
     const col = getItemCollection(item);
     if (!grouped[col]) grouped[col] = [];
     grouped[col].push(item);
   });
   return grouped;
+}
+
+function getAvailableCollectionOptions(extraNames = []) {
+  const names = new Set(["general"]);
+  Object.keys(getCollectionsMap(true)).forEach((name) => {
+    const clean = sanitizeCollectionName(name);
+    if (clean) names.add(clean);
+  });
+  extraNames.forEach((name) => {
+    const clean = sanitizeCollectionName(name);
+    if (clean) names.add(clean);
+  });
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
 
 function formatHashtags(rawTags) {
@@ -189,53 +236,104 @@ function formatPeopleList(rawPeople) {
     .join(", ");
 }
 
-function detectFileDimensions(file, targetInput) {
-  if (!file || !targetInput) return;
-  const objectUrl = URL.createObjectURL(file);
-
-  if (file.type.startsWith("video/")) {
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      targetInput.value = `${video.videoWidth}x${video.videoHeight}px`;
-      URL.revokeObjectURL(objectUrl);
-    };
-    video.onerror = () => URL.revokeObjectURL(objectUrl);
-    video.src = objectUrl;
-  } else if (file.type.startsWith("image/")) {
-    const img = new Image();
-    img.onload = () => {
-      targetInput.value = `${img.naturalWidth}x${img.naturalHeight}px`;
-      URL.revokeObjectURL(objectUrl);
-    };
-    img.onerror = () => URL.revokeObjectURL(objectUrl);
-    img.src = objectUrl;
-  } else {
-    URL.revokeObjectURL(objectUrl);
-  }
-}
-
 function renderMediaFallback(container, fallbackText, defaultLabel = "No media available") {
   if (!container) return;
   const caption = (fallbackText || "").trim() || defaultLabel;
   container.innerHTML = `<span class="journal-media-placeholder">${escapeHtml(caption)}</span>`;
 }
 
-function populateExistingMediaSelects() {
-  const validItems = getAllValidMediaItems();
+function updateJournalPickerSelectionUI() {
+  const pickerGrid = document.getElementById("journal-media-picker-grid");
+  const clearBtn = document.getElementById("clear-journal-media-btn");
+  const selectionLabel = document.getElementById("journal-selected-media-label");
+  const hasSelection = Boolean(attachedMediaId || selectedJournalMediaUrl);
 
-  const journalSelect = document.getElementById("journal-existing-media-select");
-  if (journalSelect) {
-    const prevVal = journalSelect.value;
-    journalSelect.innerHTML = '<option value="">-- Select from existing media --</option>';
-    validItems.forEach((item) => {
-      const opt = document.createElement("option");
-      opt.value = item.id || getItemUrl(item);
-      opt.dataset.url = getItemUrl(item);
-      opt.textContent = `${getItemTitle(item)} (${getItemCollection(item)})`;
-      journalSelect.appendChild(opt);
-    });
-    if (prevVal) journalSelect.value = prevVal;
+  if (clearBtn) {
+    clearBtn.classList.toggle("hidden", !hasSelection);
+  }
+
+  if (selectionLabel) {
+    if (hasSelection) {
+      const matched = resolveMediaReference(attachedMediaId, selectedJournalMediaUrl);
+      const labelText = matched ? `${getItemTitle(matched)} (${getItemCollection(matched)})` : selectedJournalMediaUrl;
+      selectionLabel.textContent = `Selected: ${labelText}`;
+    } else {
+      selectionLabel.textContent = "No media selected.";
+    }
+  }
+
+  if (!pickerGrid) return;
+  pickerGrid.querySelectorAll(".media-picker-thumb").forEach((btn) => {
+    const isMatch =
+      (attachedMediaId && btn.dataset.mediaId === attachedMediaId) ||
+      (selectedJournalMediaUrl && btn.dataset.url === selectedJournalMediaUrl);
+    btn.classList.toggle("selected", Boolean(isMatch));
+    btn.setAttribute("aria-selected", String(Boolean(isMatch)));
+
+    const checkEl = btn.querySelector(".media-picker-check");
+    if (checkEl) checkEl.classList.toggle("hidden", !isMatch);
+  });
+}
+
+function populateExistingMediaSelects() {
+  const validItems = getAllValidMediaItems(true);
+
+  const pickerGrid = document.getElementById("journal-media-picker-grid");
+  if (pickerGrid) {
+    pickerGrid.innerHTML = "";
+    if (validItems.length === 0) {
+      const emptyEl = document.createElement("p");
+      emptyEl.className = "media-picker-empty";
+      emptyEl.textContent = "No Cloudinary media available yet. Upload media in Media Library first.";
+      pickerGrid.appendChild(emptyEl);
+    } else {
+      validItems.forEach((item) => {
+        const url = getItemUrl(item);
+        const isVideo = getItemResourceType(item) === "video";
+        const thumbSrc = isVideo ? getVideoPosterUrl(item) : url;
+        const label = `${getItemTitle(item)} (${getItemCollection(item)})`;
+
+        const thumbBtn = document.createElement("button");
+        thumbBtn.type = "button";
+        thumbBtn.className = "media-picker-thumb";
+        thumbBtn.dataset.mediaId = item.id || "";
+        thumbBtn.dataset.url = url;
+        thumbBtn.title = label;
+        thumbBtn.setAttribute("role", "option");
+
+        const img = document.createElement("img");
+        img.src = thumbSrc || url;
+        img.alt = getItemAlt(item);
+        img.loading = "lazy";
+        img.style.objectPosition = getItemPosition(item);
+        thumbBtn.appendChild(img);
+
+        if (isVideo) {
+          const badge = document.createElement("span");
+          badge.className = "media-picker-badge";
+          badge.textContent = "▶ VIDEO";
+          thumbBtn.appendChild(badge);
+        }
+
+        const check = document.createElement("span");
+        check.className = "media-picker-check hidden";
+        check.textContent = "✓";
+        thumbBtn.appendChild(check);
+
+        thumbBtn.onclick = () => {
+          attachedMediaId = item.id || null;
+          selectedJournalMediaUrl = url;
+          updateJournalPickerSelectionUI();
+          const statusEl = document.getElementById("journal-save-status");
+          if (statusEl) {
+            statusEl.textContent = `Selected "${getItemTitle(item)}". Click Save Entry to apply.`;
+          }
+        };
+
+        pickerGrid.appendChild(thumbBtn);
+      });
+      updateJournalPickerSelectionUI();
+    }
   }
 
   const aboutSelect = document.getElementById("about-existing-media-select");
@@ -504,9 +602,9 @@ document.addEventListener("keydown", (e) => {
 
 function createMediaCard(itemObj, listRef, indexInList, options = {}) {
   const url = getItemUrl(itemObj);
-  const titleText = getItemTitle(itemObj);
   const altText = getItemAlt(itemObj);
   const isVideo = getItemResourceType(itemObj) === "video";
+  const pos = getItemPosition(itemObj);
   const hideOnError = Boolean(options.hideOnError);
 
   const card = document.createElement("div");
@@ -532,6 +630,7 @@ function createMediaCard(itemObj, listRef, indexInList, options = {}) {
     video.muted = true;
     video.playsInline = true;
     video.preload = "none";
+    video.style.objectPosition = pos;
     const poster = getVideoPosterUrl(itemObj);
     if (poster) video.poster = poster;
     video.onerror = handleBrokenMedia;
@@ -543,21 +642,9 @@ function createMediaCard(itemObj, listRef, indexInList, options = {}) {
     img.src = url;
     img.alt = altText;
     img.loading = "lazy";
+    img.style.objectPosition = pos;
     img.onerror = handleBrokenMedia;
     card.appendChild(img);
-  }
-
-  if (isAdminSignedIn && itemObj.id) {
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "card-delete-badge";
-    delBtn.textContent = "✕";
-    delBtn.title = "Remove media item";
-    delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      await deleteMediaItemById(itemObj.id, titleText);
-    };
-    card.appendChild(delBtn);
   }
 
   card.onclick = (e) => {
@@ -577,14 +664,13 @@ function renderHomeHighlights() {
   if (!homeHighlights) return;
   homeHighlights.innerHTML = "";
 
-  const sorted = [...getAllValidMediaItems()].sort(
-    (a, b) => getItemTimestamp(b) - getItemTimestamp(a)
-  );
+  const allValid = getAllValidMediaItems(false);
+  const sorted = [...allValid].sort((a, b) => getItemTimestamp(b) - getItemTimestamp(a));
   const favorites = sorted.filter((item) => item.favorite === true);
   const highlightList = (favorites.length > 0 ? favorites : sorted).slice(0, 8);
 
   highlightList.forEach((item, idx) => {
-    homeHighlights.appendChild(createMediaCard(item, highlightList, idx, { hideOnError: true }));
+    homeHighlights.appendChild(createMediaCard(item, highlightList, idx, { hideOnError: false }));
   });
 }
 
@@ -602,7 +688,7 @@ if (mediaGallery) {
     currentMediaFilter = filter;
     mediaGallery.innerHTML = "";
 
-    const filteredList = getAllValidMediaItems().filter((item) => {
+    const filteredList = getAllValidMediaItems(false).filter((item) => {
       const type = getItemResourceType(item);
       if (filter === "image") return type === "image";
       if (filter === "video") return type === "video";
@@ -610,7 +696,7 @@ if (mediaGallery) {
     });
 
     filteredList.forEach((item, idx) => {
-      mediaGallery.appendChild(createMediaCard(item, filteredList, idx));
+      mediaGallery.appendChild(createMediaCard(item, filteredList, idx, { hideOnError: true }));
     });
   };
 
@@ -652,7 +738,7 @@ if (collectionsGrid) {
     if (collectionTitle) collectionTitle.textContent = "Collections";
     if (backBtn) backBtn.classList.add("hidden");
 
-    const grouped = getCollectionsMap();
+    const grouped = getCollectionsMap(false);
     Object.entries(grouped).forEach(([folderName, items]) => {
       const coverItem = items.find((i) => getItemResourceType(i) === "image") || items[0];
       if (!coverItem) return;
@@ -666,6 +752,7 @@ if (collectionsGrid) {
         ? getVideoPosterUrl(coverItem)
         : getItemUrl(coverItem);
       img.alt = getItemAlt(coverItem) || folderName;
+      img.style.objectPosition = getItemPosition(coverItem);
       img.onerror = () => {
         albumCard.style.display = "none";
       };
@@ -699,7 +786,7 @@ if (collectionsGrid) {
     if (backBtn) backBtn.classList.remove("hidden");
     trackEvent("open_album", { album_name: slug });
 
-    const grouped = getCollectionsMap();
+    const grouped = getCollectionsMap(false);
     const albumList = grouped[slug] || [];
 
     albumList.forEach((item, idx) => {
@@ -708,8 +795,16 @@ if (collectionsGrid) {
   }
 
   renderCollectionsView = () => {
-    if (activeCollectionFolder) openAlbum(activeCollectionFolder);
-    else showAlbums();
+    if (activeCollectionFolder) {
+      const grouped = getCollectionsMap(false);
+      if (!grouped[activeCollectionFolder]) {
+        showAlbums();
+      } else {
+        openAlbum(activeCollectionFolder);
+      }
+    } else {
+      showAlbums();
+    }
   };
 
   showAlbums();
@@ -717,14 +812,14 @@ if (collectionsGrid) {
 }
 
 // ==========================================
-// 7. ABOUT PAGE STATS & BANNER (about.html)
+// 7. ABOUT PAGE STATS (about.html)
 // ==========================================
 const archiveStats = document.getElementById("archive-stats");
 
 function renderArchiveStats() {
   if (!archiveStats) return;
-  const grouped = getCollectionsMap();
-  const allItems = getAllValidMediaItems();
+  const grouped = getCollectionsMap(false);
+  const allItems = getAllValidMediaItems(false);
   let totalPhotos = 0;
   let totalVideos = 0;
   const totalAlbums = Object.keys(grouped).length;
@@ -762,6 +857,8 @@ renderArchiveStats();
 // ==========================================
 // 8. FIREBASE FIRESTORE SYNC & INLINE EDITORS
 // ==========================================
+let renderMediaLibrary = () => {};
+
 function rebuildMediaLookups() {
   const byId = new Map();
   const bySlot = new Map();
@@ -783,6 +880,7 @@ function refreshAllViews() {
   renderCollectionsView();
   renderArchiveStats();
   renderJournal();
+  renderMediaLibrary();
   if (typeof renderAboutBannerFromState === "function") renderAboutBannerFromState();
 
   if (lightbox && !lightbox.classList.contains("hidden")) {
@@ -812,73 +910,152 @@ deleteMediaItemById = async (mediaId, label) => {
 
 onAuthStateChanged(auth, (user) => {
   isAdminSignedIn = Boolean(user);
+  syncNavbarAdminVisibility();
 
   [
-    "toggle-home-edit-btn",
-    "toggle-add-collection-btn",
+    "home-admin-actions",
     "add-journal-entry-btn",
-    "about-admin-controls",
-    "toggle-about-edit-btn"
+    "about-admin-controls"
   ].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle("hidden", !isAdminSignedIn);
   });
 
-  if (isAdminSignedIn && typeof syncAboutEditorInputs === "function") {
-    syncAboutEditorInputs();
+  const libraryWorkspace = document.getElementById("media-library-workspace");
+  const libraryAuthNotice = document.getElementById("library-auth-notice");
+  if (libraryWorkspace) libraryWorkspace.classList.toggle("hidden", !isAdminSignedIn);
+  if (libraryAuthNotice) libraryAuthNotice.classList.toggle("hidden", isAdminSignedIn);
+
+  if (!isAdminSignedIn && typeof setHomeInlineEditing === "function") {
+    setHomeInlineEditing(false);
+  }
+
+  if (!isAdminSignedIn && typeof setAboutInlineEditing === "function") {
+    setAboutInlineEditing(false);
   }
 
   refreshAllViews();
 });
 
 // ------------------------------------------
-// A. HOME PAGE INLINE EDITOR (index.html)
+// A. HOME PAGE DIRECT ON-PAGE EDITOR + PREVIEW (index.html)
 // ------------------------------------------
 const homePageTitle = document.getElementById("home-page-title");
 const homeHeroHeading = document.getElementById("home-hero-heading");
 const homeHeroSubtext = document.getElementById("home-hero-subtext");
 const toggleHomeEditBtn = document.getElementById("toggle-home-edit-btn");
-const homeEditorPanel = document.getElementById("home-editor-panel");
-const homeSectionInput = document.getElementById("home-section-input");
-const homeHeadingInput = document.getElementById("home-heading-input");
-const homeSubtextInput = document.getElementById("home-subtext-input");
-const cancelHomeEditBtn = document.getElementById("cancel-home-edit-btn");
+const previewHomeInlineBtn = document.getElementById("preview-home-inline-btn");
+const saveHomeInlineBtn = document.getElementById("save-home-inline-btn");
+const cancelHomeInlineBtn = document.getElementById("cancel-home-inline-btn");
 const homeSaveStatus = document.getElementById("home-save-status");
+
+let homeSnapshotValues = {
+  sectionTitle: "",
+  heroHeading: "",
+  heroSubtext: ""
+};
+let isHomeInlineEditing = false;
+let isHomePreviewing = false;
+
+function captureHomeSnapshot() {
+  homeSnapshotValues = {
+    sectionTitle: homePageTitle ? homePageTitle.textContent.trim() : "",
+    heroHeading: homeHeroHeading ? homeHeroHeading.textContent.trim() : "",
+    heroSubtext: homeHeroSubtext ? homeHeroSubtext.textContent.trim() : ""
+  };
+}
+
+function setHomeInlineEditing(editing) {
+  isHomeInlineEditing = Boolean(editing && isAdminSignedIn);
+  isHomePreviewing = false;
+  const editableEls = [homePageTitle, homeHeroHeading, homeHeroSubtext].filter(Boolean);
+
+  editableEls.forEach((el) => {
+    el.contentEditable = isHomeInlineEditing ? "true" : "false";
+    el.classList.toggle("inline-editable-active", isHomeInlineEditing);
+  });
+
+  if (toggleHomeEditBtn) toggleHomeEditBtn.classList.toggle("hidden", isHomeInlineEditing);
+  if (previewHomeInlineBtn) {
+    previewHomeInlineBtn.classList.toggle("hidden", !isHomeInlineEditing);
+    previewHomeInlineBtn.textContent = "Preview";
+  }
+  if (saveHomeInlineBtn) saveHomeInlineBtn.classList.toggle("hidden", !isHomeInlineEditing);
+  if (cancelHomeInlineBtn) cancelHomeInlineBtn.classList.toggle("hidden", !isHomeInlineEditing);
+
+  if (isHomeInlineEditing) {
+    captureHomeSnapshot();
+    if (homeSaveStatus) {
+      homeSaveStatus.textContent = "Editing enabled. Click any text to edit, Preview to check layout, or Save Changes.";
+    }
+    if (homeHeroHeading) homeHeroHeading.focus();
+  } else if (homeSaveStatus && homeSaveStatus.textContent.startsWith("Editing")) {
+    homeSaveStatus.textContent = "";
+  }
+}
 
 onSnapshot(doc(db, "settings", "homePage"), (snap) => {
   const data = snap.exists() ? snap.data() : {};
   if (homePageTitle && data.sectionTitle) homePageTitle.textContent = data.sectionTitle;
   if (homeHeroHeading && data.heroHeading) homeHeroHeading.textContent = data.heroHeading;
   if (homeHeroSubtext && data.heroSubtext) homeHeroSubtext.textContent = data.heroSubtext;
-
-  if (homeSectionInput && homePageTitle) homeSectionInput.value = homePageTitle.textContent.trim();
-  if (homeHeadingInput && homeHeroHeading) homeHeadingInput.value = homeHeroHeading.textContent.trim();
-  if (homeSubtextInput && homeHeroSubtext) homeSubtextInput.value = homeHeroSubtext.textContent.trim();
+  captureHomeSnapshot();
 });
 
-if (toggleHomeEditBtn && homeEditorPanel) {
-  toggleHomeEditBtn.onclick = () => homeEditorPanel.classList.toggle("hidden");
+if (toggleHomeEditBtn) {
+  toggleHomeEditBtn.onclick = () => {
+    if (!isAdminSignedIn) return;
+    setHomeInlineEditing(true);
+  };
 }
-if (cancelHomeEditBtn && homeEditorPanel) {
-  cancelHomeEditBtn.onclick = () => {
-    homeEditorPanel.classList.add("hidden");
+
+if (previewHomeInlineBtn) {
+  previewHomeInlineBtn.onclick = () => {
+    if (!isHomeInlineEditing) return;
+    isHomePreviewing = !isHomePreviewing;
+    const editableEls = [homePageTitle, homeHeroHeading, homeHeroSubtext].filter(Boolean);
+    editableEls.forEach((el) => {
+      el.contentEditable = isHomePreviewing ? "false" : "true";
+      el.classList.toggle("inline-editable-active", !isHomePreviewing);
+    });
+    previewHomeInlineBtn.textContent = isHomePreviewing ? "Resume Editing" : "Preview";
+    if (homeSaveStatus) {
+      homeSaveStatus.textContent = isHomePreviewing
+        ? "Previewing visitor view (unsaved). Click Save Changes to publish or Resume Editing."
+        : "Editing enabled. Click any text to edit, then click Save Changes.";
+    }
+  };
+}
+
+if (cancelHomeInlineBtn) {
+  cancelHomeInlineBtn.onclick = () => {
+    if (homePageTitle) homePageTitle.textContent = homeSnapshotValues.sectionTitle;
+    if (homeHeroHeading) homeHeroHeading.textContent = homeSnapshotValues.heroHeading;
+    if (homeHeroSubtext) homeHeroSubtext.textContent = homeSnapshotValues.heroSubtext;
+    setHomeInlineEditing(false);
     if (homeSaveStatus) homeSaveStatus.textContent = "";
   };
 }
-if (homeEditorPanel) {
-  homeEditorPanel.onsubmit = async (e) => {
-    e.preventDefault();
+
+if (saveHomeInlineBtn) {
+  saveHomeInlineBtn.onclick = async () => {
     if (!isAdminSignedIn) return;
     if (homeSaveStatus) homeSaveStatus.textContent = "Saving...";
+
+    const sectionTitle = homePageTitle ? homePageTitle.textContent.trim() : "";
+    const heroHeading = homeHeroHeading ? homeHeroHeading.textContent.trim() : "";
+    const heroSubtext = homeHeroSubtext ? homeHeroSubtext.textContent.trim() : "";
+
     try {
       await setDoc(doc(db, "settings", "homePage"), {
-        sectionTitle: homeSectionInput.value.trim(),
-        heroHeading: homeHeadingInput.value.trim(),
-        heroSubtext: homeSubtextInput.value.trim(),
+        sectionTitle,
+        heroHeading,
+        heroSubtext,
         updatedAt: serverTimestamp()
       }, { merge: true });
+      captureHomeSnapshot();
+      setHomeInlineEditing(false);
       if (homeSaveStatus) homeSaveStatus.textContent = "Saved.";
-      homeEditorPanel.classList.add("hidden");
     } catch (err) {
       if (homeSaveStatus) homeSaveStatus.textContent = `Save failed: ${err.message}`;
     }
@@ -886,169 +1063,665 @@ if (homeEditorPanel) {
 }
 
 // ------------------------------------------
-// B. COLLECTIONS CLOUDINARY UPLOAD & FIRESTORE SAVE (collections.html)
+// B. MEDIA LIBRARY WORKSPACE (media-library.html)
 // ------------------------------------------
-const toggleColBtn = document.getElementById("toggle-add-collection-btn");
-const colPanel = document.getElementById("collection-add-panel");
-const cancelColBtn = document.getElementById("cancel-add-collection-btn");
-const colSubmitBtn = document.getElementById("col-submit-btn");
-const colCancelUploadBtn = document.getElementById("col-cancel-upload-btn");
-const colFolderInput = document.getElementById("col-folder-input");
-const colDropzone = document.getElementById("col-dropzone");
-const colRemoteUploadInput = document.getElementById("col-remote-upload");
-const colPickFolderModeBtn = document.getElementById("col-pick-folder-mode-btn");
-const colFolderUploadInput = document.getElementById("col-folder-upload");
-const colTitleInput = document.getElementById("col-title-input");
-const colAltInput = document.getElementById("col-alt-input");
-const colStatusEl = document.getElementById("col-add-status");
-const colTrackerEl = document.getElementById("col-upload-tracker");
-const colTrackerSummary = document.getElementById("col-tracker-summary");
-const colTrackerPercent = document.getElementById("col-tracker-percent");
-const colProgressBar = document.getElementById("col-progress-bar");
-const colTrackerCurrent = document.getElementById("col-tracker-current");
-const colTrackerList = document.getElementById("col-tracker-list");
+const toggleLibUploadBtn = document.getElementById("toggle-library-upload-btn");
+const libUploadPanel = document.getElementById("library-upload-panel");
+const cancelLibUploadPanelBtn = document.getElementById("cancel-library-upload-btn");
+const libSubmitBtn = document.getElementById("lib-submit-btn");
+const libCancelUploadBtn = document.getElementById("lib-cancel-upload-btn");
+const libDropzone = document.getElementById("lib-dropzone");
+const libFileUploadInput = document.getElementById("lib-file-upload");
+const libStagingList = document.getElementById("lib-staging-list");
+const libUploadStatus = document.getElementById("lib-upload-status");
+const libTrackerEl = document.getElementById("lib-upload-tracker");
+const libTrackerSummary = document.getElementById("lib-tracker-summary");
+const libTrackerPercent = document.getElementById("lib-tracker-percent");
+const libProgressBar = document.getElementById("lib-progress-bar");
+const libTrackerCurrent = document.getElementById("lib-tracker-current");
+const libTrackerList = document.getElementById("lib-tracker-list");
 
-let queuedUploadEntries = [];
+const toggleFolderManagerBtn = document.getElementById("toggle-folder-manager-btn");
+const libFolderPanel = document.getElementById("library-folder-panel");
+const closeFolderManagerBtn = document.getElementById("close-folder-manager-btn");
+const libFoldersList = document.getElementById("library-folders-list");
+const libFolderStatus = document.getElementById("library-folder-status");
+
+const libItemEditor = document.getElementById("library-item-editor");
+const libEditHeading = document.getElementById("lib-edit-heading");
+const libEditId = document.getElementById("lib-edit-id");
+const libEditPreviewBox = document.getElementById("lib-edit-preview-box");
+const libEditTitle = document.getElementById("lib-edit-title");
+const libEditAlt = document.getElementById("lib-edit-alt");
+const libEditColSelect = document.getElementById("lib-edit-collection-select");
+const libEditColNew = document.getElementById("lib-edit-collection-new");
+const libEditPosition = document.getElementById("lib-edit-position");
+const libEditFavorite = document.getElementById("lib-edit-favorite");
+const libEditHidden = document.getElementById("lib-edit-hidden");
+const libEditStatus = document.getElementById("lib-edit-status");
+const libEditCancelBtn = document.getElementById("lib-edit-cancel-btn");
+
+const libFilterCol = document.getElementById("lib-filter-collection");
+const libFilterType = document.getElementById("lib-filter-type");
+const libSearchInput = document.getElementById("lib-search-input");
+const libCountSummary = document.getElementById("lib-count-summary");
+const mediaLibraryGrid = document.getElementById("media-library-grid");
+
+let stagedUploads = [];
 let activeUploadXhr = null;
 let uploadCancelled = false;
+let editingLibraryItem = null;
 
-function inferCollectionFromFile(file, fallbackFolder) {
-  const rel = String(file.webkitRelativePath || "").replace(/\\/g, "/");
-  const parts = rel.split("/").filter(Boolean);
-  if (parts.length >= 2) {
-    const candidate = parts[parts.length - 2].toLowerCase();
-    if (candidate && candidate !== "media") {
-      return sanitizeCollectionName(candidate);
-    }
+function clearStagedUploads() {
+  stagedUploads.forEach((entry) => {
+    if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  });
+  stagedUploads = [];
+  if (libStagingList) {
+    libStagingList.innerHTML = "";
+    libStagingList.classList.add("hidden");
   }
-  return sanitizeCollectionName(fallbackFolder) || "general";
 }
 
-function addFilesToQueue(fileList) {
-  const baseFolder = (colFolderInput && colFolderInput.value.trim()) || activeCollectionFolder || "general";
-  const incoming = Array.from(fileList || []).filter(
-    (f) => isImageMedia(f) || isVideoMedia(f)
+function renderStagedUploads() {
+  if (!libStagingList) return;
+  libStagingList.innerHTML = "";
+
+  if (stagedUploads.length === 0) {
+    libStagingList.classList.add("hidden");
+    return;
+  }
+
+  libStagingList.classList.remove("hidden");
+  const stagedNames = stagedUploads.map((e) => e.collection).filter(Boolean);
+  const availableCols = getAvailableCollectionOptions(stagedNames);
+
+  stagedUploads.forEach((entry) => {
+    const card = document.createElement("div");
+    card.className = "staging-card";
+
+    const topRow = document.createElement("div");
+    topRow.className = "staging-card-top";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "staging-filename";
+    nameSpan.textContent = entry.file.name;
+    nameSpan.title = entry.file.name;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "staging-remove-btn";
+    removeBtn.textContent = "Remove";
+    removeBtn.onclick = () => {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+      stagedUploads = stagedUploads.filter((item) => item.id !== entry.id);
+      renderStagedUploads();
+      if (libUploadStatus) {
+        libUploadStatus.textContent = stagedUploads.length
+          ? `${stagedUploads.length} file(s) staged.`
+          : "";
+      }
+    };
+
+    topRow.appendChild(nameSpan);
+    topRow.appendChild(removeBtn);
+    card.appendChild(topRow);
+
+    if (entry.isVideo) {
+      const vid = document.createElement("video");
+      vid.className = "staging-preview";
+      vid.src = entry.previewUrl;
+      vid.muted = true;
+      vid.playsInline = true;
+      vid.controls = true;
+      vid.style.objectPosition = entry.objectPosition;
+      card.appendChild(vid);
+    } else {
+      const img = document.createElement("img");
+      img.className = "staging-preview";
+      img.src = entry.previewUrl;
+      img.alt = entry.altText || entry.title;
+      img.style.objectPosition = entry.objectPosition;
+      card.appendChild(img);
+    }
+
+    const titleLbl = document.createElement("label");
+    titleLbl.className = "staging-field-label";
+    titleLbl.textContent = "Creative Display Title";
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.className = "editor-input";
+    titleInput.value = entry.title;
+    titleInput.oninput = (e) => {
+      entry.title = e.target.value;
+    };
+
+    const altLbl = document.createElement("label");
+    altLbl.className = "staging-field-label";
+    altLbl.textContent = "Alt Text / Fallback Caption";
+    const altInput = document.createElement("input");
+    altInput.type = "text";
+    altInput.className = "editor-input";
+    altInput.value = entry.altText;
+    altInput.placeholder = "Describe the image or video";
+    altInput.oninput = (e) => {
+      entry.altText = e.target.value;
+    };
+
+    const colLbl = document.createElement("label");
+    colLbl.className = "staging-field-label";
+    colLbl.textContent = "Collection";
+
+    const colSelect = document.createElement("select");
+    colSelect.className = "editor-input";
+
+    const addNewOpt = document.createElement("option");
+    addNewOpt.value = "__new__";
+    addNewOpt.textContent = "+ Add New Collection...";
+    colSelect.appendChild(addNewOpt);
+
+    availableCols.forEach((colName) => {
+      const opt = document.createElement("option");
+      opt.value = colName;
+      opt.textContent = colName;
+      colSelect.appendChild(opt);
+    });
+
+    const newColInput = document.createElement("input");
+    newColInput.type = "text";
+    newColInput.className = "editor-input staging-new-col-input";
+    newColInput.placeholder = "Enter new collection name (e.g., trips, family)";
+
+    const isCustomNew = entry.isNewCollection || !availableCols.includes(entry.collection);
+    if (isCustomNew) {
+      colSelect.value = "__new__";
+      newColInput.classList.remove("hidden");
+      newColInput.value = entry.collection || "";
+    } else {
+      colSelect.value = entry.collection;
+      newColInput.classList.add("hidden");
+      newColInput.value = "";
+    }
+
+    colSelect.onchange = (e) => {
+      if (e.target.value === "__new__") {
+        entry.isNewCollection = true;
+        newColInput.classList.remove("hidden");
+        newColInput.focus();
+      } else {
+        entry.isNewCollection = false;
+        entry.collection = e.target.value;
+        newColInput.classList.add("hidden");
+        newColInput.value = "";
+      }
+    };
+
+    newColInput.oninput = (e) => {
+      entry.isNewCollection = true;
+      entry.collection = e.target.value;
+    };
+
+    const posLbl = document.createElement("label");
+    posLbl.className = "staging-field-label";
+    posLbl.textContent = "Card Position";
+    const posSelect = document.createElement("select");
+    posSelect.className = "editor-input";
+    [
+      ["center", "Center (Default)"],
+      ["top", "Top"],
+      ["bottom", "Bottom"],
+      ["left", "Left"],
+      ["right", "Right"]
+    ].forEach(([val, label]) => {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = label;
+      if (entry.objectPosition === val) opt.selected = true;
+      posSelect.appendChild(opt);
+    });
+    posSelect.onchange = (e) => {
+      entry.objectPosition = normalizeObjectPosition(e.target.value);
+      const previewEl = card.querySelector("img.staging-preview, video.staging-preview");
+      if (previewEl) previewEl.style.objectPosition = entry.objectPosition;
+    };
+
+    card.appendChild(titleLbl);
+    card.appendChild(titleInput);
+    card.appendChild(altLbl);
+    card.appendChild(altInput);
+    card.appendChild(colLbl);
+    card.appendChild(colSelect);
+    card.appendChild(newColInput);
+    card.appendChild(posLbl);
+    card.appendChild(posSelect);
+
+    libStagingList.appendChild(card);
+  });
+}
+
+function stageFiles(fileList) {
+  const hasExistingCols = Object.keys(getCollectionsMap(true)).length > 0;
+  const selectedFilterCol = libFilterCol && libFilterCol.value !== "__all__" ? libFilterCol.value : "";
+  const defaultCol = selectedFilterCol || (hasExistingCols ? "general" : "");
+
+  const files = Array.from(fileList || []).filter(
+    (f) => f.type.startsWith("image/") || f.type.startsWith("video/")
   );
 
-  incoming.forEach((file) => {
-    const colName = inferCollectionFromFile(file, baseFolder);
+  files.forEach((file) => {
     const cleanTitle = file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim() || "Untitled";
-    const key = `${file.name}::${file.size}::${colName}`;
-    if (!queuedUploadEntries.some((entry) => entry.key === key)) {
-      queuedUploadEntries.push({
-        key,
-        file,
-        collection: colName,
-        title: cleanTitle
-      });
-    }
+    const isVideo = file.type.startsWith("video/");
+    stagedUploads.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      isVideo,
+      previewUrl: URL.createObjectURL(file),
+      title: cleanTitle,
+      altText: "",
+      collection: defaultCol,
+      isNewCollection: !defaultCol,
+      objectPosition: "center"
+    });
   });
 
-  if (colStatusEl && queuedUploadEntries.length > 0) {
-    colStatusEl.textContent = `${queuedUploadEntries.length} media file(s) ready to upload to Cloudinary (${buildCloudinaryFolder(baseFolder)}).`;
+  renderStagedUploads();
+  if (libUploadStatus && stagedUploads.length > 0) {
+    libUploadStatus.textContent = `${stagedUploads.length} file(s) staged. Review details below, then click Upload & Save.`;
   }
 }
 
-if (colPanel) {
-  if (toggleColBtn) {
-    toggleColBtn.onclick = () => {
-      if (activeCollectionFolder && colFolderInput) {
-        colFolderInput.value = activeCollectionFolder;
+function updateLibraryPreviewCard() {
+  if (!libEditPreviewBox || !editingLibraryItem) return;
+  libEditPreviewBox.innerHTML = "";
+  const url = getItemUrl(editingLibraryItem);
+  const pos = libEditPosition ? normalizeObjectPosition(libEditPosition.value) : getItemPosition(editingLibraryItem);
+  const isVideo = getItemResourceType(editingLibraryItem) === "video";
+
+  if (isVideo) {
+    const vid = document.createElement("video");
+    vid.src = url;
+    vid.muted = true;
+    vid.playsInline = true;
+    vid.controls = true;
+    vid.style.objectPosition = pos;
+    const poster = getVideoPosterUrl(editingLibraryItem);
+    if (poster) vid.poster = poster;
+    libEditPreviewBox.appendChild(vid);
+  } else {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = (libEditAlt && libEditAlt.value.trim()) || getItemTitle(editingLibraryItem);
+    img.style.objectPosition = pos;
+    libEditPreviewBox.appendChild(img);
+  }
+}
+
+function openLibraryItemEditor(item) {
+  if (!libItemEditor || !item) return;
+  editingLibraryItem = item;
+  const currentCol = getItemCollection(item);
+  const cols = getAvailableCollectionOptions([currentCol]);
+
+  if (libEditId) libEditId.value = item.id || "";
+  if (libEditHeading) libEditHeading.textContent = `Edit Media: ${getItemTitle(item)}`;
+  if (libEditTitle) libEditTitle.value = getItemTitle(item);
+  if (libEditAlt) libEditAlt.value = item.altText || "";
+  if (libEditPosition) libEditPosition.value = getItemPosition(item);
+  if (libEditFavorite) libEditFavorite.checked = item.favorite === true;
+  if (libEditHidden) libEditHidden.checked = item.hidden === true;
+  if (libEditStatus) libEditStatus.textContent = "";
+
+  if (libEditColSelect) {
+    libEditColSelect.innerHTML = "";
+    const addNewOpt = document.createElement("option");
+    addNewOpt.value = "__new__";
+    addNewOpt.textContent = "+ Add New Collection...";
+    libEditColSelect.appendChild(addNewOpt);
+
+    cols.forEach((colName) => {
+      const opt = document.createElement("option");
+      opt.value = colName;
+      opt.textContent = colName;
+      libEditColSelect.appendChild(opt);
+    });
+
+    libEditColSelect.value = currentCol;
+  }
+
+  if (libEditColNew) {
+    libEditColNew.value = "";
+    libEditColNew.classList.add("hidden");
+  }
+
+  updateLibraryPreviewCard();
+  libItemEditor.classList.remove("hidden");
+  libItemEditor.scrollIntoView({ behavior: "smooth" });
+}
+
+function renderFolderManager() {
+  if (!libFoldersList) return;
+  libFoldersList.innerHTML = "";
+  const grouped = getCollectionsMap(true);
+  const folderNames = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+
+  if (folderNames.length === 0) {
+    libFoldersList.innerHTML = '<p class="media-picker-empty">No folders yet. Upload media to create collections.</p>';
+    return;
+  }
+
+  folderNames.forEach((folderName) => {
+    const items = grouped[folderName];
+    const hiddenCount = items.filter((i) => i.hidden === true).length;
+    const allHidden = hiddenCount === items.length;
+
+    const row = document.createElement("div");
+    row.className = "folder-manager-row";
+
+    const info = document.createElement("div");
+    info.className = "folder-manager-info";
+
+    const title = document.createElement("strong");
+    title.textContent = folderName;
+
+    const countSpan = document.createElement("span");
+    countSpan.className = "library-card-meta";
+    countSpan.textContent = `${items.length} item(s)${hiddenCount > 0 ? ` • ${hiddenCount} hidden` : ""}`;
+
+    info.appendChild(title);
+    info.appendChild(countSpan);
+
+    const actions = document.createElement("div");
+    actions.className = "folder-manager-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "btn btn-secondary";
+    renameBtn.textContent = "Rename";
+    renameBtn.onclick = async () => {
+      if (!isAdminSignedIn) return;
+      const entered = window.prompt(`Rename collection "${folderName}" to:`, folderName);
+      if (!entered) return;
+      const nextSlug = sanitizeCollectionName(entered);
+      if (!nextSlug || nextSlug === folderName) return;
+
+      if (libFolderStatus) libFolderStatus.textContent = `Moving ${items.length} item(s) to "${nextSlug}"...`;
+      try {
+        await Promise.all(
+          items.map((item) =>
+            updateDoc(doc(db, "mediaItems", item.id), {
+              collection: nextSlug,
+              updatedAt: serverTimestamp()
+            })
+          )
+        );
+        if (libFolderStatus) libFolderStatus.textContent = `Renamed "${folderName}" to "${nextSlug}".`;
+      } catch (err) {
+        if (libFolderStatus) libFolderStatus.textContent = `Rename failed: ${err.message}`;
       }
-      colPanel.classList.toggle("hidden");
+    };
+
+    const toggleVisibilityBtn = document.createElement("button");
+    toggleVisibilityBtn.type = "button";
+    toggleVisibilityBtn.className = "btn";
+    toggleVisibilityBtn.textContent = allHidden ? "Show in Public" : "Hide Seasonal";
+    toggleVisibilityBtn.onclick = async () => {
+      if (!isAdminSignedIn) return;
+      const targetHidden = !allHidden;
+      if (libFolderStatus) {
+        libFolderStatus.textContent = `${targetHidden ? "Hiding" : "Showing"} "${folderName}"...`;
+      }
+      try {
+        await Promise.all(
+          items.map((item) =>
+            updateDoc(doc(db, "mediaItems", item.id), {
+              hidden: targetHidden,
+              updatedAt: serverTimestamp()
+            })
+          )
+        );
+        if (libFolderStatus) {
+          libFolderStatus.textContent = targetHidden
+            ? `"${folderName}" is now hidden from public pages.`
+            : `"${folderName}" is now visible on public pages.`;
+        }
+      } catch (err) {
+        if (libFolderStatus) libFolderStatus.textContent = `Update failed: ${err.message}`;
+      }
+    };
+
+    actions.appendChild(renameBtn);
+    actions.appendChild(toggleVisibilityBtn);
+
+    row.appendChild(info);
+    row.appendChild(actions);
+    libFoldersList.appendChild(row);
+  });
+}
+
+renderMediaLibrary = () => {
+  if (!mediaLibraryGrid) return;
+
+  const allItems = getAllValidMediaItems(true);
+  const cols = getAvailableCollectionOptions([]);
+
+  if (libFilterCol) {
+    const prevCol = libFilterCol.value || "__all__";
+    libFilterCol.innerHTML = '<option value="__all__">All Collections</option>';
+    cols.forEach((colName) => {
+      const opt = document.createElement("option");
+      opt.value = colName;
+      opt.textContent = colName;
+      libFilterCol.appendChild(opt);
+    });
+    libFilterCol.value = Array.from(libFilterCol.options).some((o) => o.value === prevCol) ? prevCol : "__all__";
+  }
+
+  renderFolderManager();
+
+  const selectedCol = libFilterCol ? libFilterCol.value : "__all__";
+  const selectedType = libFilterType ? libFilterType.value : "all";
+  const searchTerm = libSearchInput ? libSearchInput.value.trim().toLowerCase() : "";
+
+  const filtered = allItems.filter((item) => {
+    if (selectedCol !== "__all__" && getItemCollection(item) !== selectedCol) return false;
+    if (selectedType === "image" && getItemResourceType(item) !== "image") return false;
+    if (selectedType === "video" && getItemResourceType(item) !== "video") return false;
+    if (selectedType === "hidden" && item.hidden !== true) return false;
+    if (selectedType === "favorite" && item.favorite !== true) return false;
+    if (searchTerm) {
+      const haystack = `${getItemTitle(item)} ${getItemAlt(item)} ${getItemCollection(item)}`.toLowerCase();
+      if (!haystack.includes(searchTerm)) return false;
+    }
+    return true;
+  });
+
+  if (libCountSummary) {
+    libCountSummary.textContent = `Showing ${filtered.length} of ${allItems.length} item(s)`;
+  }
+
+  mediaLibraryGrid.innerHTML = "";
+  if (filtered.length === 0) {
+    mediaLibraryGrid.innerHTML = '<p class="journal-status">No media items match the current filter.</p>';
+    return;
+  }
+
+  filtered.forEach((item, idx) => {
+    const url = getItemUrl(item);
+    const titleText = getItemTitle(item);
+    const altText = getItemAlt(item);
+    const isVideo = getItemResourceType(item) === "video";
+    const pos = getItemPosition(item);
+
+    const card = document.createElement("article");
+    card.className = "library-card";
+    if (item.hidden === true) card.classList.add("is-hidden-item");
+
+    const mediaBox = document.createElement("div");
+    mediaBox.className = "library-card-media";
+    mediaBox.onclick = () => {
+      activeGalleryList = filtered;
+      renderLightboxItem(idx);
+    };
+
+    const flags = document.createElement("div");
+    flags.className = "library-card-flags";
+    if (item.favorite === true) {
+      const favPill = document.createElement("span");
+      favPill.className = "library-flag-pill flag-fav";
+      favPill.textContent = "★ Highlight";
+      flags.appendChild(favPill);
+    }
+    if (item.hidden === true) {
+      const hidPill = document.createElement("span");
+      hidPill.className = "library-flag-pill flag-hidden";
+      hidPill.textContent = "Hidden";
+      flags.appendChild(hidPill);
+    }
+    mediaBox.appendChild(flags);
+
+    if (isVideo) {
+      const vBadge = document.createElement("span");
+      vBadge.className = "video-badge";
+      vBadge.textContent = "▶ VIDEO";
+      mediaBox.appendChild(vBadge);
+
+      const img = document.createElement("img");
+      img.src = getVideoPosterUrl(item) || url;
+      img.alt = altText;
+      img.loading = "lazy";
+      img.style.objectPosition = pos;
+      mediaBox.appendChild(img);
+    } else {
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = altText;
+      img.loading = "lazy";
+      img.style.objectPosition = pos;
+      mediaBox.appendChild(img);
+    }
+
+    const body = document.createElement("div");
+    body.className = "library-card-body";
+
+    const h3 = document.createElement("h3");
+    h3.className = "library-card-title";
+    h3.textContent = titleText;
+    h3.title = titleText;
+
+    const meta = document.createElement("p");
+    meta.className = "library-card-meta";
+    meta.textContent = `Folder: ${getItemCollection(item)} • Crop: ${pos}`;
+
+    const actions = document.createElement("div");
+    actions.className = "library-card-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "btn";
+    editBtn.textContent = "Edit";
+    editBtn.onclick = () => openLibraryItemEditor(item);
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn btn-danger-inline";
+    delBtn.textContent = "Delete";
+    delBtn.onclick = () => deleteMediaItemById(item.id, titleText);
+
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+
+    body.appendChild(h3);
+    body.appendChild(meta);
+    body.appendChild(actions);
+
+    card.appendChild(mediaBox);
+    card.appendChild(body);
+    mediaLibraryGrid.appendChild(card);
+  });
+};
+
+if (libUploadPanel) {
+  if (toggleLibUploadBtn) {
+    toggleLibUploadBtn.onclick = () => {
+      libUploadPanel.classList.toggle("hidden");
     };
   }
 
-  if (cancelColBtn) {
-    cancelColBtn.onclick = () => {
-      queuedUploadEntries = [];
-      colPanel.reset();
-      colPanel.classList.add("hidden");
-      if (colStatusEl) colStatusEl.textContent = "";
-      if (colTrackerEl) colTrackerEl.classList.add("hidden");
+  if (cancelLibUploadPanelBtn) {
+    cancelLibUploadPanelBtn.onclick = () => {
+      clearStagedUploads();
+      libUploadPanel.reset();
+      libUploadPanel.classList.add("hidden");
+      if (libUploadStatus) libUploadStatus.textContent = "";
+      if (libTrackerEl) libTrackerEl.classList.add("hidden");
     };
   }
 
-  if (colCancelUploadBtn) {
-    colCancelUploadBtn.onclick = () => {
+  if (libCancelUploadBtn) {
+    libCancelUploadBtn.onclick = () => {
       uploadCancelled = true;
       if (activeUploadXhr) activeUploadXhr.abort();
     };
   }
 
-  if (colDropzone && colRemoteUploadInput) {
-    colDropzone.onclick = (e) => {
-      if (e.target === colRemoteUploadInput) return;
-      colRemoteUploadInput.click();
+  if (libDropzone && libFileUploadInput) {
+    libDropzone.onclick = (e) => {
+      if (e.target === libFileUploadInput) return;
+      libFileUploadInput.click();
     };
-    colDropzone.ondragover = (e) => {
+    libDropzone.ondragover = (e) => {
       e.preventDefault();
-      colDropzone.classList.add("drag-over");
+      libDropzone.classList.add("drag-over");
     };
-    colDropzone.ondragleave = () => {
-      colDropzone.classList.remove("drag-over");
+    libDropzone.ondragleave = () => {
+      libDropzone.classList.remove("drag-over");
     };
-    colDropzone.ondrop = (e) => {
+    libDropzone.ondrop = (e) => {
       e.preventDefault();
-      colDropzone.classList.remove("drag-over");
+      libDropzone.classList.remove("drag-over");
       if (e.dataTransfer && e.dataTransfer.files) {
-        addFilesToQueue(e.dataTransfer.files);
+        stageFiles(e.dataTransfer.files);
       }
     };
-  }
-
-  if (colRemoteUploadInput) {
-    colRemoteUploadInput.onchange = () => {
-      addFilesToQueue(colRemoteUploadInput.files);
-      colRemoteUploadInput.value = "";
+    libFileUploadInput.onchange = () => {
+      stageFiles(libFileUploadInput.files);
+      libFileUploadInput.value = "";
     };
   }
 
-  if (colPickFolderModeBtn && colFolderUploadInput) {
-    colPickFolderModeBtn.onclick = () => colFolderUploadInput.click();
-    colFolderUploadInput.onchange = () => {
-      addFilesToQueue(colFolderUploadInput.files);
-      colFolderUploadInput.value = "";
-    };
-  }
-
-  colPanel.onsubmit = async (e) => {
+  libUploadPanel.onsubmit = async (e) => {
     e.preventDefault();
     if (!isAdminSignedIn) return;
 
-    if (queuedUploadEntries.length === 0) {
-      if (colStatusEl) {
-        colStatusEl.textContent = "Select one or more image/video files first, then click Upload & Save.";
+    if (stagedUploads.length === 0) {
+      if (libUploadStatus) {
+        libUploadStatus.textContent = "Select one or more media files first, then click Upload & Save.";
       }
       return;
     }
 
-    const folderOverride = colFolderInput && colFolderInput.value.trim()
-      ? sanitizeCollectionName(colFolderInput.value)
-      : "";
-    const customTitle = (colTitleInput && colTitleInput.value.trim()) || "";
-    const customAlt = (colAltInput && colAltInput.value.trim()) || "";
-
     uploadCancelled = false;
-    if (colSubmitBtn) colSubmitBtn.disabled = true;
-    if (colCancelUploadBtn) colCancelUploadBtn.classList.remove("hidden");
-    if (colTrackerEl) colTrackerEl.classList.remove("hidden");
-    if (colTrackerList) colTrackerList.innerHTML = "";
-    if (colStatusEl) colStatusEl.textContent = "";
+    if (libSubmitBtn) libSubmitBtn.disabled = true;
+    if (libCancelUploadBtn) libCancelUploadBtn.classList.remove("hidden");
+    if (libTrackerEl) libTrackerEl.classList.remove("hidden");
+    if (libTrackerList) libTrackerList.innerHTML = "";
+    if (libUploadStatus) libUploadStatus.textContent = "";
 
-    const total = queuedUploadEntries.length;
+    const total = stagedUploads.length;
     let completed = 0;
+    const remaining = [...stagedUploads];
 
     for (let i = 0; i < total; i++) {
       if (uploadCancelled) break;
-      const entry = queuedUploadEntries[i];
-      const targetCol = folderOverride || entry.collection || "general";
-      const finalTitle = (total === 1 && customTitle) || entry.title;
-      const finalAlt = customAlt || finalTitle;
+      const entry = stagedUploads[i];
+      const targetCol = sanitizeCollectionName(entry.collection) || "general";
+      const finalTitle = (entry.title || "").trim() || "Untitled";
+      const finalAlt = (entry.altText || "").trim() || finalTitle;
+      const finalPos = normalizeObjectPosition(entry.objectPosition);
 
-      if (colTrackerSummary) colTrackerSummary.textContent = `Uploading ${i + 1} of ${total}`;
-      if (colTrackerCurrent) {
-        colTrackerCurrent.textContent = `${entry.file.name} -> ${buildCloudinaryFolder(targetCol)}`;
+      if (libTrackerSummary) libTrackerSummary.textContent = `Uploading ${i + 1} of ${total}`;
+      if (libTrackerCurrent) {
+        libTrackerCurrent.textContent = `${entry.file.name} -> ${buildCloudinaryFolder(targetCol)}`;
       }
 
       try {
@@ -1057,8 +1730,8 @@ if (colPanel) {
           targetCol,
           (pct) => {
             const overallPct = Math.round(((i + pct / 100) / total) * 100);
-            if (colTrackerPercent) colTrackerPercent.textContent = `${overallPct}%`;
-            if (colProgressBar) colProgressBar.style.width = `${overallPct}%`;
+            if (libTrackerPercent) libTrackerPercent.textContent = `${overallPct}%`;
+            if (libProgressBar) libProgressBar.style.width = `${overallPct}%`;
           },
           (xhr) => {
             activeUploadXhr = xhr;
@@ -1075,54 +1748,134 @@ if (colPanel) {
           posterUrl: uploaded.posterUrl || "",
           publicId: uploaded.publicId || "",
           altText: finalAlt,
+          objectPosition: finalPos,
           favorite: false,
+          hidden: false,
           slot: null,
           journalId: null,
           createdAt: Date.now()
         });
 
         completed++;
-        if (colTrackerList) {
+        const idxInRemaining = remaining.findIndex((item) => item.id === entry.id);
+        if (idxInRemaining !== -1) {
+          const [doneEntry] = remaining.splice(idxInRemaining, 1);
+          if (doneEntry && doneEntry.previewUrl) URL.revokeObjectURL(doneEntry.previewUrl);
+        }
+
+        if (libTrackerList) {
           const li = document.createElement("li");
           li.className = "upload-tracker-item";
-          li.innerHTML = `<span>${escapeHtml(entry.file.name)}</span><span class="status-done">Saved</span>`;
-          colTrackerList.appendChild(li);
+          li.innerHTML = `<span>${escapeHtml(finalTitle)}</span><span class="status-done">Saved</span>`;
+          libTrackerList.appendChild(li);
         }
       } catch (err) {
         activeUploadXhr = null;
-        if (colTrackerList) {
+        if (libTrackerList) {
           const li = document.createElement("li");
           li.className = "upload-tracker-item";
           const statusClass = uploadCancelled ? "status-cancelled" : "status-error";
           const statusLabel = uploadCancelled ? "Cancelled" : `Failed: ${err.message}`;
           li.innerHTML = `<span>${escapeHtml(entry.file.name)}</span><span class="${statusClass}">${escapeHtml(statusLabel)}</span>`;
-          colTrackerList.appendChild(li);
+          libTrackerList.appendChild(li);
         }
       }
     }
 
-    if (colSubmitBtn) colSubmitBtn.disabled = false;
-    if (colCancelUploadBtn) colCancelUploadBtn.classList.add("hidden");
+    stagedUploads = remaining;
+    renderStagedUploads();
+
+    if (libSubmitBtn) libSubmitBtn.disabled = false;
+    if (libCancelUploadBtn) libCancelUploadBtn.classList.add("hidden");
 
     const finalPct = Math.round((completed / total) * 100);
-    if (colTrackerPercent) colTrackerPercent.textContent = `${finalPct}%`;
-    if (colProgressBar) colProgressBar.style.width = `${finalPct}%`;
-    if (colTrackerSummary) {
-      colTrackerSummary.textContent = uploadCancelled
+    if (libTrackerPercent) libTrackerPercent.textContent = `${finalPct}%`;
+    if (libProgressBar) libProgressBar.style.width = `${finalPct}%`;
+    if (libTrackerSummary) {
+      libTrackerSummary.textContent = uploadCancelled
         ? `Cancelled (${completed}/${total} saved)`
         : `Completed (${completed}/${total} saved)`;
     }
-    if (colTrackerCurrent) colTrackerCurrent.textContent = "";
+    if (libTrackerCurrent) libTrackerCurrent.textContent = "";
 
-    queuedUploadEntries = [];
     if (completed === total && !uploadCancelled) {
-      colPanel.reset();
-      colPanel.classList.add("hidden");
-      if (colStatusEl) colStatusEl.textContent = `Uploaded ${completed} item(s) to Cloudinary and saved to Firebase.`;
-    } else if (colStatusEl) {
-      colStatusEl.textContent = `${completed} of ${total} item(s) saved.`;
+      libUploadPanel.reset();
+      libUploadPanel.classList.add("hidden");
+      if (libUploadStatus) libUploadStatus.textContent = `Uploaded ${completed} file(s) to Cloudinary and saved to Firebase.`;
+    } else if (libUploadStatus) {
+      libUploadStatus.textContent = `${completed} of ${total} file(s) saved.`;
     }
   };
+}
+
+if (toggleFolderManagerBtn && libFolderPanel) {
+  toggleFolderManagerBtn.onclick = () => {
+    libFolderPanel.classList.toggle("hidden");
+  };
+}
+if (closeFolderManagerBtn && libFolderPanel) {
+  closeFolderManagerBtn.onclick = () => {
+    libFolderPanel.classList.add("hidden");
+  };
+}
+
+if (libEditColSelect && libEditColNew) {
+  libEditColSelect.onchange = () => {
+    const isNew = libEditColSelect.value === "__new__";
+    libEditColNew.classList.toggle("hidden", !isNew);
+    if (isNew) libEditColNew.focus();
+  };
+}
+if (libEditPosition) {
+  libEditPosition.onchange = updateLibraryPreviewCard;
+}
+if (libEditCancelBtn && libItemEditor) {
+  libEditCancelBtn.onclick = () => {
+    editingLibraryItem = null;
+    libItemEditor.classList.add("hidden");
+    if (libEditStatus) libEditStatus.textContent = "";
+  };
+}
+
+if (libItemEditor) {
+  libItemEditor.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!isAdminSignedIn || !editingLibraryItem || !editingLibraryItem.id) return;
+    if (libEditStatus) libEditStatus.textContent = "Saving...";
+
+    const chosenCol = libEditColSelect && libEditColSelect.value === "__new__"
+      ? sanitizeCollectionName(libEditColNew ? libEditColNew.value : "")
+      : sanitizeCollectionName(libEditColSelect ? libEditColSelect.value : "");
+
+    const finalCol = chosenCol || "general";
+    const finalTitle = (libEditTitle ? libEditTitle.value.trim() : "") || "Untitled";
+    const finalAlt = (libEditAlt ? libEditAlt.value.trim() : "") || finalTitle;
+    const finalPos = normalizeObjectPosition(libEditPosition ? libEditPosition.value : "center");
+
+    try {
+      await updateDoc(doc(db, "mediaItems", editingLibraryItem.id), {
+        title: finalTitle,
+        altText: finalAlt,
+        collection: finalCol,
+        objectPosition: finalPos,
+        favorite: Boolean(libEditFavorite && libEditFavorite.checked),
+        hidden: Boolean(libEditHidden && libEditHidden.checked),
+        updatedAt: serverTimestamp()
+      });
+      editingLibraryItem = null;
+      libItemEditor.classList.add("hidden");
+      if (libEditStatus) libEditStatus.textContent = "";
+    } catch (err) {
+      if (libEditStatus) libEditStatus.textContent = `Save failed: ${err.message}`;
+    }
+  };
+}
+
+[libFilterCol, libFilterType].forEach((el) => {
+  if (el) el.onchange = () => renderMediaLibrary();
+});
+if (libSearchInput) {
+  libSearchInput.oninput = () => renderMediaLibrary();
 }
 
 onSnapshot(query(collection(db, "mediaItems"), orderBy("createdAt", "desc")), (snap) => {
@@ -1131,29 +1884,44 @@ onSnapshot(query(collection(db, "mediaItems"), orderBy("createdAt", "desc")), (s
 });
 
 // ------------------------------------------
-// C. ABOUT PAGE IN-PLACE EDITOR & BANNER (about.html)
+// C. ABOUT PAGE DIRECT ON-PAGE EDITOR + PREVIEW (about.html)
 // ------------------------------------------
+const aboutPageTitle = document.getElementById("about-page-title");
 const aboutBannerImg = document.getElementById("about-banner-img");
+const aboutMediaToolbar = document.getElementById("about-media-toolbar");
 const aboutP1El = document.getElementById("about-paragraph-1");
 const aboutP2El = document.getElementById("about-paragraph-2");
 const aboutExistingSelect = document.getElementById("about-existing-media-select");
-const aboutPhotoInput = document.getElementById("about-photo-input");
 const aboutUploadRemoteBtn = document.getElementById("about-upload-remote-btn");
 const aboutClearPhotoBtn = document.getElementById("about-clear-photo-btn");
 const aboutRemotePicker = document.getElementById("about-remote-picker");
-const aboutP1Input = document.getElementById("about-p1-input");
-const aboutP2Input = document.getElementById("about-p2-input");
+const toggleAboutEditBtn = document.getElementById("toggle-about-edit-btn");
+const previewAboutInlineBtn = document.getElementById("preview-about-inline-btn");
+const cancelAboutInlineBtn = document.getElementById("cancel-about-inline-btn");
 const aboutSaveBtn = document.getElementById("about-save-btn");
 const aboutSaveStatus = document.getElementById("about-save-status");
 
 let latestAboutDoc = {};
+let aboutSnapshotValues = {
+  sectionTitle: "",
+  bannerUrl: "",
+  paragraph1: "",
+  paragraph2: ""
+};
+let isAboutInlineEditing = false;
+let isAboutPreviewing = false;
+
+function getCurrentAboutBannerUrl() {
+  const slotMedia = mediaBySlot.get("about-banner");
+  return (
+    (slotMedia && getItemUrl(slotMedia)) ||
+    String(latestAboutDoc.bannerUrl || latestAboutDoc.mediaPath || "").trim()
+  );
+}
 
 function renderAboutBannerFromState() {
   if (!aboutBannerImg) return;
-  const slotMedia = mediaBySlot.get("about-banner");
-  const bannerUrl =
-    (slotMedia && getItemUrl(slotMedia)) ||
-    String(latestAboutDoc.bannerUrl || latestAboutDoc.mediaPath || "").trim();
+  const bannerUrl = getCurrentAboutBannerUrl();
 
   if (!bannerUrl) {
     aboutBannerImg.classList.add("hidden");
@@ -1164,51 +1932,123 @@ function renderAboutBannerFromState() {
   }
 }
 
-function syncAboutEditorInputs() {
-  const currentBanner =
-    (aboutBannerImg && aboutBannerImg.getAttribute("src")) ||
-    String(latestAboutDoc.bannerUrl || latestAboutDoc.mediaPath || "").trim();
+function captureAboutSnapshot() {
+  aboutSnapshotValues = {
+    sectionTitle: aboutPageTitle ? aboutPageTitle.textContent.trim() : "",
+    bannerUrl: getCurrentAboutBannerUrl(),
+    paragraph1: aboutP1El ? aboutP1El.textContent.trim() : "",
+    paragraph2: aboutP2El ? aboutP2El.textContent.trim() : ""
+  };
+}
 
-  if (aboutPhotoInput) aboutPhotoInput.value = currentBanner;
-  if (aboutExistingSelect) {
-    const matchedOpt = Array.from(aboutExistingSelect.options).find((o) => o.value === currentBanner);
-    aboutExistingSelect.value = matchedOpt ? matchedOpt.value : "";
+function setAboutInlineEditing(editing) {
+  isAboutInlineEditing = Boolean(editing && isAdminSignedIn);
+  isAboutPreviewing = false;
+  const editableEls = [aboutPageTitle, aboutP1El, aboutP2El].filter(Boolean);
+
+  editableEls.forEach((el) => {
+    el.contentEditable = isAboutInlineEditing ? "true" : "false";
+    el.classList.toggle("inline-editable-active", isAboutInlineEditing);
+  });
+
+  if (aboutMediaToolbar) aboutMediaToolbar.classList.toggle("hidden", !isAboutInlineEditing);
+  if (toggleAboutEditBtn) toggleAboutEditBtn.classList.toggle("hidden", isAboutInlineEditing);
+  if (previewAboutInlineBtn) {
+    previewAboutInlineBtn.classList.toggle("hidden", !isAboutInlineEditing);
+    previewAboutInlineBtn.textContent = "Preview";
   }
-  if (aboutP1Input && aboutP1El) aboutP1Input.value = aboutP1El.textContent.trim();
-  if (aboutP2Input && aboutP2El) aboutP2Input.value = aboutP2El.textContent.trim();
+  if (aboutSaveBtn) aboutSaveBtn.classList.toggle("hidden", !isAboutInlineEditing);
+  if (cancelAboutInlineBtn) cancelAboutInlineBtn.classList.toggle("hidden", !isAboutInlineEditing);
+
+  if (isAboutInlineEditing) {
+    captureAboutSnapshot();
+    if (aboutExistingSelect) {
+      const currentUrl = aboutBannerImg ? aboutBannerImg.getAttribute("src") || "" : "";
+      const matchingOpt = Array.from(aboutExistingSelect.options).find((o) => o.value === currentUrl);
+      aboutExistingSelect.value = matchingOpt ? matchingOpt.value : "";
+    }
+    if (aboutSaveStatus) {
+      aboutSaveStatus.textContent = "Editing enabled. Edit text or banner controls, Preview layout, or Save Changes.";
+    }
+    if (aboutP1El) aboutP1El.focus();
+  } else if (aboutSaveStatus && aboutSaveStatus.textContent.startsWith("Editing")) {
+    aboutSaveStatus.textContent = "";
+  }
 }
 
 onSnapshot(doc(db, "settings", "aboutBanner"), (snap) => {
   latestAboutDoc = snap.exists() ? snap.data() : {};
+  if (aboutPageTitle && latestAboutDoc.sectionTitle) aboutPageTitle.textContent = latestAboutDoc.sectionTitle;
   if (aboutP1El && latestAboutDoc.paragraph1) aboutP1El.textContent = latestAboutDoc.paragraph1;
   if (aboutP2El && latestAboutDoc.paragraph2) aboutP2El.textContent = latestAboutDoc.paragraph2;
 
   renderAboutBannerFromState();
-  syncAboutEditorInputs();
+  captureAboutSnapshot();
 });
 
-if (aboutExistingSelect) {
-  aboutExistingSelect.onchange = () => {
-    const url = aboutExistingSelect.value.trim();
-    if (!url) return;
-    if (aboutPhotoInput) aboutPhotoInput.value = url;
-    if (aboutBannerImg) {
-      aboutBannerImg.src = url;
-      aboutBannerImg.classList.remove("hidden");
-    }
+if (toggleAboutEditBtn) {
+  toggleAboutEditBtn.onclick = () => {
+    if (!isAdminSignedIn) return;
+    setAboutInlineEditing(true);
+  };
+}
+
+if (previewAboutInlineBtn) {
+  previewAboutInlineBtn.onclick = () => {
+    if (!isAboutInlineEditing) return;
+    isAboutPreviewing = !isAboutPreviewing;
+    const editableEls = [aboutPageTitle, aboutP1El, aboutP2El].filter(Boolean);
+    editableEls.forEach((el) => {
+      el.contentEditable = isAboutPreviewing ? "false" : "true";
+      el.classList.toggle("inline-editable-active", !isAboutPreviewing);
+    });
+    if (aboutMediaToolbar) aboutMediaToolbar.classList.toggle("hidden", isAboutPreviewing);
+    previewAboutInlineBtn.textContent = isAboutPreviewing ? "Resume Editing" : "Preview";
     if (aboutSaveStatus) {
-      aboutSaveStatus.textContent = "Selected existing banner image. Click Save Changes to apply.";
+      aboutSaveStatus.textContent = isAboutPreviewing
+        ? "Previewing visitor view (unsaved). Click Save Changes to publish or Resume Editing."
+        : "Editing enabled. Edit text or banner controls directly, then click Save Changes.";
     }
   };
 }
 
-if (aboutClearPhotoBtn && aboutPhotoInput && aboutBannerImg) {
+if (cancelAboutInlineBtn) {
+  cancelAboutInlineBtn.onclick = () => {
+    if (aboutPageTitle) aboutPageTitle.textContent = aboutSnapshotValues.sectionTitle;
+    if (aboutP1El) aboutP1El.textContent = aboutSnapshotValues.paragraph1;
+    if (aboutP2El) aboutP2El.textContent = aboutSnapshotValues.paragraph2;
+    if (aboutBannerImg) {
+      if (aboutSnapshotValues.bannerUrl) {
+        aboutBannerImg.src = aboutSnapshotValues.bannerUrl;
+        aboutBannerImg.classList.remove("hidden");
+      } else {
+        aboutBannerImg.classList.add("hidden");
+        aboutBannerImg.removeAttribute("src");
+      }
+    }
+    setAboutInlineEditing(false);
+    if (aboutSaveStatus) aboutSaveStatus.textContent = "";
+  };
+}
+
+if (aboutExistingSelect) {
+  aboutExistingSelect.onchange = () => {
+    const url = aboutExistingSelect.value.trim();
+    if (!url || !aboutBannerImg) return;
+    aboutBannerImg.src = url;
+    aboutBannerImg.classList.remove("hidden");
+    if (aboutSaveStatus) {
+      aboutSaveStatus.textContent = "Banner preview updated. Click Save Changes to apply.";
+    }
+  };
+}
+
+if (aboutClearPhotoBtn && aboutBannerImg) {
   aboutClearPhotoBtn.onclick = () => {
-    aboutPhotoInput.value = "";
     if (aboutExistingSelect) aboutExistingSelect.value = "";
     aboutBannerImg.classList.add("hidden");
     aboutBannerImg.removeAttribute("src");
-    if (aboutSaveStatus) aboutSaveStatus.textContent = "Banner photo cleared. Click Save Changes to apply.";
+    if (aboutSaveStatus) aboutSaveStatus.textContent = "Banner removed in preview. Click Save Changes to apply.";
   };
 }
 
@@ -1222,7 +2062,6 @@ if (aboutUploadRemoteBtn && aboutRemotePicker) {
       const uploaded = await uploadFileToCloudinary(file, "about", (pct) => {
         if (aboutSaveStatus) aboutSaveStatus.textContent = `Uploading banner to Cloudinary (${pct}%)...`;
       });
-      if (aboutPhotoInput) aboutPhotoInput.value = uploaded.secureUrl;
       if (aboutBannerImg) {
         aboutBannerImg.src = uploaded.secureUrl;
         aboutBannerImg.classList.remove("hidden");
@@ -1239,12 +2078,17 @@ if (aboutUploadRemoteBtn && aboutRemotePicker) {
 async function saveAboutChanges() {
   if (!isAdminSignedIn) return;
   if (aboutSaveStatus) aboutSaveStatus.textContent = "Saving...";
-  const finalBannerUrl = aboutPhotoInput ? aboutPhotoInput.value.trim() : "";
-  const finalP1 = aboutP1Input ? aboutP1Input.value.trim() : "";
-  const finalP2 = aboutP2Input ? aboutP2Input.value.trim() : "";
+
+  const finalTitle = aboutPageTitle ? aboutPageTitle.textContent.trim() : "";
+  const finalBannerUrl = aboutBannerImg && !aboutBannerImg.classList.contains("hidden")
+    ? (aboutBannerImg.getAttribute("src") || "").trim()
+    : "";
+  const finalP1 = aboutP1El ? aboutP1El.textContent.trim() : "";
+  const finalP2 = aboutP2El ? aboutP2El.textContent.trim() : "";
 
   try {
     await setDoc(doc(db, "settings", "aboutBanner"), {
+      sectionTitle: finalTitle,
       bannerUrl: finalBannerUrl,
       mediaPath: finalBannerUrl,
       paragraph1: finalP1,
@@ -1252,10 +2096,16 @@ async function saveAboutChanges() {
       updatedAt: serverTimestamp()
     }, { merge: true });
 
-    if (aboutP1El && finalP1) aboutP1El.textContent = finalP1;
-    if (aboutP2El && finalP2) aboutP2El.textContent = finalP2;
-    renderAboutBannerFromState();
-
+    latestAboutDoc = {
+      ...latestAboutDoc,
+      sectionTitle: finalTitle,
+      bannerUrl: finalBannerUrl,
+      mediaPath: finalBannerUrl,
+      paragraph1: finalP1,
+      paragraph2: finalP2
+    };
+    captureAboutSnapshot();
+    setAboutInlineEditing(false);
     if (aboutSaveStatus) aboutSaveStatus.textContent = "Saved.";
   } catch (err) {
     if (aboutSaveStatus) aboutSaveStatus.textContent = `Save failed: ${err.message}`;
@@ -1276,10 +2126,9 @@ const journalEditorHeading = document.getElementById("journal-editor-heading");
 const journalDocIdInput = document.getElementById("journal-doc-id");
 const journalTitleInput = document.getElementById("journal-title-input");
 const journalDateInput = document.getElementById("journal-date-input");
-const journalExistingSelect = document.getElementById("journal-existing-media-select");
-const journalPathInput = document.getElementById("journal-path-input");
-const journalUploadRemoteBtn = document.getElementById("journal-upload-remote-btn");
-const journalRemotePicker = document.getElementById("journal-remote-picker");
+const toggleJournalMediaPickerBtn = document.getElementById("toggle-journal-media-picker-btn");
+const journalMediaPickerGrid = document.getElementById("journal-media-picker-grid");
+const clearJournalMediaBtn = document.getElementById("clear-journal-media-btn");
 const journalAltInput = document.getElementById("journal-alt-input");
 const journalLocationInput = document.getElementById("journal-location-input");
 const journalPeopleInput = document.getElementById("journal-people-input");
@@ -1290,13 +2139,21 @@ const journalDescInput = document.getElementById("journal-desc-input");
 const cancelJournalEditBtn = document.getElementById("cancel-journal-edit-btn");
 const journalSaveStatus = document.getElementById("journal-save-status");
 
-let attachedMediaId = null;
+function setJournalMediaPickerOpen(open) {
+  if (!journalMediaPickerGrid) return;
+  journalMediaPickerGrid.classList.toggle("hidden", !open);
+  if (toggleJournalMediaPickerBtn) {
+    toggleJournalMediaPickerBtn.textContent = open ? "Hide Media" : "Select Media";
+  }
+}
 
 function resetJournalEditor() {
   if (!journalEditorPanel) return;
   journalEditorPanel.reset();
   attachedMediaId = null;
-  if (journalExistingSelect) journalExistingSelect.value = "";
+  selectedJournalMediaUrl = "";
+  setJournalMediaPickerOpen(false);
+  updateJournalPickerSelectionUI();
   if (journalDocIdInput) journalDocIdInput.value = "";
   if (journalDateInput) journalDateInput.valueAsDate = new Date();
   if (journalEditorHeading) journalEditorHeading.textContent = "New Diary Entry";
@@ -1305,18 +2162,16 @@ function resetJournalEditor() {
 
 openJournalEditForm = (entry) => {
   if (!journalEditorPanel) return;
-  attachedMediaId = entry.mediaId || null;
   const entryUrl = getItemUrl(entry);
+  const matchedMedia = resolveMediaReference(entry.mediaId || entry.slot, entryUrl);
+  attachedMediaId = (matchedMedia && matchedMedia.id) || entry.mediaId || null;
+  selectedJournalMediaUrl = (matchedMedia && getItemUrl(matchedMedia)) || entryUrl;
+  setJournalMediaPickerOpen(false);
+  updateJournalPickerSelectionUI();
+
   if (journalDocIdInput) journalDocIdInput.value = entry.id || "";
   if (journalTitleInput) journalTitleInput.value = entry.title || entry.displayTitle || "";
   if (journalDateInput) journalDateInput.value = entry.date || "";
-  if (journalPathInput) journalPathInput.value = entryUrl;
-  if (journalExistingSelect) {
-    const matchedOpt = Array.from(journalExistingSelect.options).find(
-      (o) => (o.dataset && o.dataset.url) === entryUrl
-    );
-    journalExistingSelect.value = matchedOpt ? matchedOpt.value : "";
-  }
   if (journalAltInput) journalAltInput.value = entry.altText || "";
   if (journalLocationInput) journalLocationInput.value = entry.location || "";
   if (journalPeopleInput) {
@@ -1329,21 +2184,26 @@ openJournalEditForm = (entry) => {
   if (journalResolutionInput) journalResolutionInput.value = entry.resolution || "";
   if (journalDescInput) journalDescInput.value = entry.body || entry.description || "";
   if (journalEditorHeading) journalEditorHeading.textContent = "Edit Diary Entry";
+  if (journalSaveStatus) journalSaveStatus.textContent = "";
 
   journalEditorPanel.classList.remove("hidden");
   journalEditorPanel.scrollIntoView({ behavior: "smooth" });
 };
 
-if (journalExistingSelect) {
-  journalExistingSelect.onchange = () => {
-    const selectedOpt = journalExistingSelect.options[journalExistingSelect.selectedIndex];
-    const url = (selectedOpt && selectedOpt.dataset.url) || "";
-    if (!url) return;
-    if (journalPathInput) journalPathInput.value = url;
-    const matched = dynamicMediaItems.find((m) => getItemUrl(m) === url);
-    attachedMediaId = matched ? matched.id : null;
+if (toggleJournalMediaPickerBtn && journalMediaPickerGrid) {
+  toggleJournalMediaPickerBtn.onclick = () => {
+    const willOpen = journalMediaPickerGrid.classList.contains("hidden");
+    setJournalMediaPickerOpen(willOpen);
+  };
+}
+
+if (clearJournalMediaBtn) {
+  clearJournalMediaBtn.onclick = () => {
+    attachedMediaId = null;
+    selectedJournalMediaUrl = "";
+    updateJournalPickerSelectionUI();
     if (journalSaveStatus) {
-      journalSaveStatus.textContent = "Selected existing Cloudinary media. Click Save Entry to apply.";
+      journalSaveStatus.textContent = "Media selection cleared. Click Save Entry to apply.";
     }
   };
 }
@@ -1360,46 +2220,6 @@ if (cancelJournalEditBtn && journalEditorPanel) {
     journalEditorPanel.classList.add("hidden");
   };
 }
-if (journalUploadRemoteBtn && journalRemotePicker) {
-  journalUploadRemoteBtn.onclick = () => journalRemotePicker.click();
-  journalRemotePicker.onchange = async () => {
-    const file = journalRemotePicker.files && journalRemotePicker.files[0];
-    if (!file || !isAdminSignedIn) return;
-    detectFileDimensions(file, journalResolutionInput);
-    if (journalSaveStatus) journalSaveStatus.textContent = "Uploading media to Cloudinary...";
-
-    try {
-      const uploaded = await uploadFileToCloudinary(file, "journal", (pct) => {
-        if (journalSaveStatus) journalSaveStatus.textContent = `Uploading to Cloudinary (${pct}%)...`;
-      });
-      if (journalPathInput) journalPathInput.value = uploaded.secureUrl;
-
-      const mediaDoc = await addDoc(collection(db, "mediaItems"), {
-        title: (journalTitleInput && journalTitleInput.value.trim()) || uploaded.originalName,
-        collection: uploaded.collection,
-        folder: uploaded.folder,
-        resourceType: uploaded.resourceType,
-        secureUrl: uploaded.secureUrl,
-        posterUrl: uploaded.posterUrl || "",
-        publicId: uploaded.publicId || "",
-        altText: (journalAltInput && journalAltInput.value.trim()) || uploaded.originalName,
-        favorite: false,
-        slot: null,
-        journalId: journalDocIdInput ? journalDocIdInput.value || null : null,
-        createdAt: Date.now()
-      });
-      attachedMediaId = mediaDoc.id;
-
-      if (journalSaveStatus) {
-        journalSaveStatus.textContent = "Uploaded to Cloudinary. Click Save Entry to publish.";
-      }
-    } catch (err) {
-      if (journalSaveStatus) journalSaveStatus.textContent = `Upload failed: ${err.message}`;
-    } finally {
-      journalRemotePicker.value = "";
-    }
-  };
-}
 
 if (journalEditorPanel) {
   journalEditorPanel.onsubmit = async (e) => {
@@ -1407,7 +2227,8 @@ if (journalEditorPanel) {
     if (!isAdminSignedIn) return;
     if (journalSaveStatus) journalSaveStatus.textContent = "Saving...";
 
-    const cleanUrl = journalPathInput ? journalPathInput.value.trim() : "";
+    const selectedItem = attachedMediaId ? mediaById.get(attachedMediaId) : null;
+    const cleanUrl = (selectedItem && getItemUrl(selectedItem)) || selectedJournalMediaUrl || "";
     const cleanTitle = journalTitleInput ? journalTitleInput.value.trim() : "";
     const peopleList = journalPeopleInput
       ? journalPeopleInput.value.split(",").map((s) => s.trim()).filter(Boolean)
@@ -1499,6 +2320,7 @@ function renderJournal() {
       vid.muted = true;
       vid.playsInline = true;
       vid.preload = "none";
+      vid.style.objectPosition = getItemPosition(linkedMedia || entry);
       const poster = getVideoPosterUrl(linkedMedia || { secureUrl: mediaUrl, posterUrl: entry.posterUrl });
       if (poster) vid.poster = poster;
       vid.onerror = () => renderMediaFallback(mediaBox, fallbackCaption);
@@ -1508,6 +2330,7 @@ function renderJournal() {
       img.src = mediaUrl;
       img.alt = fallbackCaption;
       img.loading = "lazy";
+      img.style.objectPosition = getItemPosition(linkedMedia || entry);
       img.onerror = () => renderMediaFallback(mediaBox, fallbackCaption);
       mediaBox.appendChild(img);
     } else {
@@ -1535,7 +2358,6 @@ function renderJournal() {
     appendCardMeta(metaBox, "People", formattedPeople);
     appendCardMeta(metaBox, "Tags", formattedTags);
     appendCardMeta(metaBox, "Camera / Device", entry.camera);
-    appendCardMeta(metaBox, "Resolution", entry.resolution);
 
     textBox.appendChild(titleH3);
     if (entry.date) textBox.appendChild(dateSpan);

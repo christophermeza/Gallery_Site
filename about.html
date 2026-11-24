@@ -1,67 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>About | Gallery</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-
   <div id="navbar-placeholder"></div>
 
-  <main>
-    <div class="section-header">
-      <h2 class="page-title">About This Gallery</h2>
-    </div>
+  <main class="container">
+    <section class="section-header">
+      <h1 id="about-page-title" class="page-title">About This Gallery</h1>
+      <div id="about-admin-controls" class="admin-inline-actions hidden">
+        <button id="toggle-about-edit-btn" class="btn" type="button">Edit Page</button>
+        <button id="about-save-btn" class="btn hidden" type="button">Save Changes</button>
+        <button id="cancel-about-inline-btn" class="btn btn-secondary hidden" type="button">Cancel</button>
+      </div>
+    </section>
 
-    <div id="about-banner-card" class="hero-banner">
-      <img
-        id="about-banner-img"
-        class="about-banner-photo hidden"
-        alt="Featured gallery banner"
-        onerror="this.classList.add('hidden')"
-      >
-      <p id="about-paragraph-1">
-        A personal collection of photography, motion clips, and written memories organized into curated albums and diary entries.
-      </p>
-      <p id="about-paragraph-2">
-        Browse full media sets, explore themed collections, or read the stories behind individual moments.
-      </p>
+    <section class="hero-banner">
+      <img id="about-banner-img" class="about-banner-photo hidden" alt="About gallery banner" />
 
-      <div id="about-admin-controls" class="editor-panel inline-editor-panel hidden">
-        <hr class="inline-editor-divider">
-        <h3>Editing About Page</h3>
-
-        <label class="editor-label" for="about-existing-media-select">Choose Existing Cloudinary Image</label>
-        <select id="about-existing-media-select" class="editor-input">
+      <div id="about-media-toolbar" class="inline-media-controls hidden">
+        <select id="about-existing-media-select" class="editor-input inline-media-select" aria-label="Choose existing Cloudinary image">
           <option value="">-- Select from existing media --</option>
         </select>
-
-        <label class="editor-label" for="about-photo-input">Banner Photo (URL, Path, or Upload — leave blank for no banner)</label>
-        <div class="input-with-action">
-          <input id="about-photo-input" class="editor-input" type="text" placeholder="https://... or media/folder/photo.jpg">
-          <button id="about-upload-remote-btn" class="btn btn-secondary" type="button">Upload Photo</button>
-          <button id="about-clear-photo-btn" class="btn btn-danger-inline" type="button">Clear Photo</button>
-        </div>
-        <input id="about-remote-picker" type="file" accept="image/*" hidden>
-
-        <label class="editor-label" for="about-p1-input">First Paragraph</label>
-        <textarea id="about-p1-input" class="editor-textarea" rows="2"></textarea>
-
-        <label class="editor-label" for="about-p2-input">Second Paragraph</label>
-        <textarea id="about-p2-input" class="editor-textarea" rows="2"></textarea>
-
-        <div class="hero-actions" style="margin-top: 14px;">
-          <button id="about-save-btn" class="btn" type="button">Save Changes</button>
-        </div>
-        <p id="about-save-status" class="editor-status"></p>
+        <button id="about-upload-remote-btn" class="btn" type="button">Upload Banner</button>
+        <button id="about-clear-photo-btn" class="btn btn-danger-inline" type="button">Remove Banner</button>
+        <input id="about-remote-picker" class="hidden" type="file" accept="image/*" />
       </div>
 
-      <div id="archive-stats" class="stats-row"></div>
-    </div>
+      <p id="about-paragraph-1">A personal collection of photography, motion clips, and written memories organized into curated albums and diary entries.</p>
+      <p id="about-paragraph-2">Browse full media sets, explore themed collections, or read the stories behind individual moments.</p>
+      <p id="about-save-status" class="editor-status"></p>
+    </section>
+
+    <section id="archive-stats" class="stats-grid" aria-label="Archive statistics"></section>
   </main>
 
+  <script type="module" src="firebase-config.js"></script>
+  <script type="module" src="cloudinary.js"></script>
   <script type="module" src="script.js"></script>
 </body>
 </html>

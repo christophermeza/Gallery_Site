@@ -1,99 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Collections | Gallery</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-
   <div id="navbar-placeholder"></div>
 
-  <main>
-    <div class="section-header">
-      <h2 id="collection-title" class="page-title">Collections</h2>
+  <main class="container">
+    <section class="section-header-row">
+      <h1 id="collection-title" class="page-heading">Collections</h1>
       <div class="header-right-group">
-        <button id="toggle-add-collection-btn" class="btn hidden" type="button">+ Add Collection / Media</button>
-        <button id="back-to-albums" class="btn hidden" type="button">← Back to Collections</button>
+        <button id="back-to-albums" class="btn btn-secondary hidden" type="button">← Back to Collections</button>
       </div>
-    </div>
+    </section>
 
-    <form id="collection-add-panel" class="hero-banner editor-panel hidden">
-      <h3>Add Media to a Collection</h3>
-
-      <label class="editor-label" for="col-remote-upload">Upload Files</label>
-      <div id="col-dropzone" class="upload-dropzone" tabindex="0" role="button" aria-label="Upload Files Remotely: click to select files or drag and drop files or folders">
-        <p class="upload-dropzone-title">Drag &amp; drop files or folders here — or click to choose files</p>
-        <p class="upload-dropzone-hint">Subfolders automatically become collection names. Leave title/folder blank for fast batch uploads.</p>
-        <input id="col-remote-upload" class="upload-file-input" type="file" accept="image/*,video/*" multiple>
-      </div>
-      <div class="upload-secondary-row">
-        <button id="col-pick-folder-mode-btn" class="upload-link-btn" type="button">Or choose a folder directory</button>
-        <input id="col-folder-upload" type="file" webkitdirectory directory multiple hidden>
-      </div>
-
-      <label class="editor-label" for="col-title-input">Creative Display Title (Optional)</label>
-      <input id="col-title-input" class="editor-input" type="text" placeholder="Optional (defaults to cleaned file name)">
-
-      <label class="editor-label" for="col-folder-input">Collection / Folder Name (Optional)</label>
-      <input id="col-folder-input" class="editor-input" type="text" placeholder="Optional — auto-detected from subfolders or defaults to general">
-
-      <label class="editor-label" for="col-alt-input">Alt Text / Fallback Caption (Optional)</label>
-      <input id="col-alt-input" class="editor-input" type="text" placeholder="Optional caption for all uploaded items">
-
-      <div id="col-upload-tracker" class="upload-tracker hidden" aria-live="polite">
-        <div class="upload-tracker-header">
-          <span id="col-tracker-summary" class="upload-tracker-summary">Preparing upload...</span>
-          <span id="col-tracker-percent" class="upload-tracker-percent">0%</span>
-        </div>
-        <div class="upload-progress-track">
-          <div id="col-progress-bar" class="upload-progress-fill" style="width: 0%;"></div>
-        </div>
-        <div id="col-tracker-current" class="upload-tracker-current"></div>
-        <ul id="col-tracker-list" class="upload-tracker-list"></ul>
-      </div>
-
-      <div class="hero-actions" style="margin-top: 14px;">
-        <button id="col-submit-btn" class="btn" type="submit">Upload &amp; Save</button>
-        <button id="col-cancel-upload-btn" class="btn btn-danger-inline hidden" type="button">Cancel Upload</button>
-        <button id="cancel-add-collection-btn" class="btn btn-secondary" type="button">Close</button>
-      </div>
-      <p id="col-add-status" class="editor-status"></p>
-
-      <div id="post-upload-editor" class="post-upload-editor hidden">
-        <h4>Post-Upload Rename &amp; Details (Optional)</h4>
-        <p class="upload-dropzone-hint">Rename detected folders or customize display titles and alt text for any uploaded file, then save.</p>
-
-        <div class="post-upload-section">
-          <h5>Detected Folders (Collections)</h5>
-          <div id="post-folder-list" class="post-folder-grid"></div>
-        </div>
-
-        <div class="post-upload-section">
-          <h5>Uploaded Files</h5>
-          <div id="post-file-list" class="post-file-list"></div>
-        </div>
-
-        <div class="hero-actions" style="justify-content: flex-start; margin-top: 14px;">
-          <button id="save-post-upload-btn" class="btn" type="button">Save All Changes</button>
-          <button id="dismiss-post-upload-btn" class="btn btn-secondary" type="button">Done / Keep Defaults</button>
-        </div>
-        <p id="post-upload-status" class="editor-status"></p>
-      </div>
-    </form>
-
-    <div id="collections-grid" class="collections-grid"></div>
+    <section id="collections-grid" class="collections-grid" aria-label="Collections"></section>
   </main>
 
-  <div id="lightbox" class="hidden" role="dialog" aria-modal="true">
-    <button id="lightbox-close" type="button" aria-label="Close">✕</button>
-    <button id="lightbox-prev" type="button" aria-label="Previous">‹</button>
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Media viewer">
+    <button id="lightbox-close" type="button" aria-label="Close viewer">✕</button>
+    <button id="lightbox-prev" type="button" aria-label="Previous media">‹</button>
     <div id="lightbox-content"></div>
+    <button id="lightbox-next" type="button" aria-label="Next media">›</button>
     <p id="lightbox-caption"></p>
-    <button id="lightbox-next" type="button" aria-label="Next">›</button>
   </div>
 
+  <script type="module" src="firebase-config.js"></script>
+  <script type="module" src="cloudinary.js"></script>
   <script type="module" src="script.js"></script>
 </body>
 </html>
